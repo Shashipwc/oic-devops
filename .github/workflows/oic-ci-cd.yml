@@ -1,0 +1,116 @@
+name: OIC Universal CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target Environment (dev/sit/uat/prod)"
+        required: true
+        default: "sit"
+      integration_list:
+        description: "Comma-separated Integration IDs (CODE|VERSION)"
+        required: true
+
+  push:
+    branches:
+      - main
+
+env:
+  EXPORT_FILE: integration.iar
+
+jobs:
+  oic-deploy:
+    runs-on: ubuntu-latest
+
+    environment: ${{ github.event.inputs.environment || 'sit' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        integration: ${{ fromJson(format('["{0}"]', replace(github.event.inputs.integration_list, ',', '","'))) }}
+
+    steps:
+      # 🔹 Checkout
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 🔹 Validate Inputs
+      - name: Validate Inputs
+        run: |
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Integration: ${{ matrix.integration }}"
+
+      # 🔹 Set Environment Variables Dynamically
+      - name: Set OIC Credentials
+        run: |
+          if [[ "${{ github.event.inputs.environment }}" == "prod" ]]; then
+            echo "OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
+            echo "OIC_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "OIC_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
+          elif [[ "${{ github.event.inputs.environment }}" == "uat" ]]; then
+            echo "OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
+            echo "OIC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "OIC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
+          elif [[ "${{ github.event.inputs.environment }}" == "sit" ]]; then
+            echo "OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
+            echo "OIC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "OIC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
+          else
+            echo "OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
+            echo "OIC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "OIC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
+          fi
+
+      # 🔹 Export from Source (only for non-prod promotion)
+      - name: Export Integration from Source
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Exporting ${{ matrix.integration }}..."
+          curl --retry 3 --retry-delay 5 -u "$OIC_USER:$OIC_PASS" \
+          -X GET "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}/archive" \
+          -H "Accept: application/octet-stream" \
+          -o $EXPORT_FILE
+
+      # 🔹 Validate Export
+      - name: Validate Export File
+        run: |
+          if [ ! -f "$EXPORT_FILE" ]; then
+            echo "Export failed!"
+            exit 1
+          fi
+          ls -lh $EXPORT_FILE
+
+      # 🔹 Upload Artifact
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iar-${{ matrix.integration }}
+          path: ${{ env.EXPORT_FILE }}
+
+      # 🔹 Import to Target OIC
+      - name: Import Integration
+        run: |
+          echo "Importing ${{ matrix.integration }}..."
+          curl --retry 3 --retry-delay 5 -u "$OIC_USER:$OIC_PASS" \
+          -X POST "$OIC_URL/ic/api/integration/v1/integrations/archive" \
+          -H "Content-Type: multipart/form-data" \
+          -F "file=@$EXPORT_FILE"
+
+      # 🔹 Activate Integration
+      - name: Activate Integration
+        run: |
+          echo "Activating ${{ matrix.integration }}..."
+          curl --retry 3 --retry-delay 5 -u "$OIC_USER:$OIC_PASS" \
+          -X POST "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}/activate"
+
+      # 🔹 Post Deployment Check
+      - name: Verify Deployment
+        run: |
+          echo "Verifying ${{ matrix.integration }}..."
+          curl -u "$OIC_USER:$OIC_PASS" \
+          "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}" \
+          | jq .
+
+      # 🔹 Cleanup
+      - name: Cleanup
+        run: rm -f $EXPORT_FILE
