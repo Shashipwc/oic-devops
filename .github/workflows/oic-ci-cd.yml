@@ -8,12 +8,8 @@ on:
         required: true
         default: "sit"
       integration_list:
-        description: "Comma-separated Integration IDs (CODE|VERSION)"
+        description: 'JSON array (e.g. ["INTG1|01.00.0000","INTG2|02.00.0000"])'
         required: true
-
-  push:
-    branches:
-      - main
 
 env:
   EXPORT_FILE: integration.iar
@@ -22,25 +18,25 @@ jobs:
   oic-deploy:
     runs-on: ubuntu-latest
 
-    environment: ${{ github.event.inputs.environment || 'sit' }}
+    environment: ${{ github.event.inputs.environment }}
 
     strategy:
       fail-fast: false
       matrix:
-        integration: ${{ fromJson(format('["{0}"]', replace(github.event.inputs.integration_list, ',', '","'))) }}
+        integration: ${{ fromJson(github.event.inputs.integration_list) }}
 
     steps:
-      # 🔹 Checkout
+      # 🔹 Checkout Code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 🔹 Validate Inputs
-      - name: Validate Inputs
+      # 🔹 Print Inputs
+      - name: Show Inputs
         run: |
           echo "Environment: ${{ github.event.inputs.environment }}"
           echo "Integration: ${{ matrix.integration }}"
 
-      # 🔹 Set Environment Variables Dynamically
+      # 🔹 Set Environment-Specific Credentials
       - name: Set OIC Credentials
         run: |
           if [[ "${{ github.event.inputs.environment }}" == "prod" ]]; then
@@ -61,37 +57,39 @@ jobs:
             echo "OIC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
           fi
 
-      # 🔹 Export from Source (only for non-prod promotion)
-      - name: Export Integration from Source
-        if: github.event_name == 'workflow_dispatch'
+      # 🔹 Export Integration from Source OIC
+      - name: Export Integration
         run: |
           echo "Exporting ${{ matrix.integration }}..."
-          curl --retry 3 --retry-delay 5 -u "$OIC_USER:$OIC_PASS" \
+          curl --fail --retry 3 --retry-delay 5 \
+          -u "$OIC_USER:$OIC_PASS" \
           -X GET "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}/archive" \
           -H "Accept: application/octet-stream" \
           -o $EXPORT_FILE
 
-      # 🔹 Validate Export
-      - name: Validate Export File
+      # 🔹 Validate Export File
+      - name: Validate Export
         run: |
           if [ ! -f "$EXPORT_FILE" ]; then
             echo "Export failed!"
             exit 1
           fi
+          echo "Export successful:"
           ls -lh $EXPORT_FILE
 
-      # 🔹 Upload Artifact
+      # 🔹 Upload Artifact (for audit/debug)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: iar-${{ matrix.integration }}
           path: ${{ env.EXPORT_FILE }}
 
-      # 🔹 Import to Target OIC
+      # 🔹 Import Integration into Target OIC
       - name: Import Integration
         run: |
           echo "Importing ${{ matrix.integration }}..."
-          curl --retry 3 --retry-delay 5 -u "$OIC_USER:$OIC_PASS" \
+          curl --fail --retry 3 --retry-delay 5 \
+          -u "$OIC_USER:$OIC_PASS" \
           -X POST "$OIC_URL/ic/api/integration/v1/integrations/archive" \
           -H "Content-Type: multipart/form-data" \
           -F "file=@$EXPORT_FILE"
@@ -100,14 +98,16 @@ jobs:
       - name: Activate Integration
         run: |
           echo "Activating ${{ matrix.integration }}..."
-          curl --retry 3 --retry-delay 5 -u "$OIC_USER:$OIC_PASS" \
+          curl --fail --retry 3 --retry-delay 5 \
+          -u "$OIC_USER:$OIC_PASS" \
           -X POST "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}/activate"
 
-      # 🔹 Post Deployment Check
-      - name: Verify Deployment
+      # 🔹 Verify Deployment
+      - name: Verify Integration
         run: |
           echo "Verifying ${{ matrix.integration }}..."
-          curl -u "$OIC_USER:$OIC_PASS" \
+          curl --fail \
+          -u "$OIC_USER:$OIC_PASS" \
           "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}" \
           | jq .
 
