@@ -1,10 +1,14 @@
-name: OIC Deploy SIT to Target
+name: OIC Deploy (Any Env to Any Env)
 
 on:
   workflow_dispatch:
     inputs:
+      source_env:
+        description: "Source Environment (dev/sit/uat/prod)"
+        required: true
+        default: "sit"
       target_env:
-        description: "Target Environment (dev/uat/prod)"
+        description: "Target Environment (dev/sit/uat/prod)"
         required: true
         default: "uat"
       integration:
@@ -22,8 +26,17 @@ jobs:
       # ✅ Show Inputs
       - name: Show Inputs
         run: |
-          echo "Target Env: ${{ github.event.inputs.target_env }}"
+          echo "Source: ${{ github.event.inputs.source_env }}"
+          echo "Target: ${{ github.event.inputs.target_env }}"
           echo "Integration: ${{ github.event.inputs.integration }}"
+
+      # ❌ Prevent same environment deployment
+      - name: Validate Environments
+        run: |
+          if [ "${{ github.event.inputs.source_env }}" = "${{ github.event.inputs.target_env }}" ]; then
+            echo "❌ Source and Target cannot be same"
+            exit 1
+          fi
 
       # ✅ Parse Integration
       - name: Parse Integration
@@ -34,53 +47,85 @@ jobs:
           echo "INTEGRATION_NAME=$NAME" >> $GITHUB_ENV
           echo "INTEGRATION_VERSION=$VERSION" >> $GITHUB_ENV
 
-      # ✅ SOURCE = SIT (always)
-      - name: Set Source (SIT)
+      # ✅ Set SOURCE credentials
+      - name: Set Source Credentials
         run: |
-          echo "SRC_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
-          echo "SRC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
-          echo "SRC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
+          SRC="${{ github.event.inputs.source_env }}"
 
-      # ✅ TARGET = based on input
-      - name: Set Target
+          case "$SRC" in
+            dev)
+              echo "SRC_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
+              echo "SRC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "SRC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            sit)
+              echo "SRC_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
+              echo "SRC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "SRC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            uat)
+              echo "SRC_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
+              echo "SRC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "SRC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            prod)
+              echo "SRC_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
+              echo "SRC_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "SRC_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "❌ Invalid source_env"
+              exit 1
+              ;;
+          esac
+
+      # ✅ Set TARGET credentials
+      - name: Set Target Credentials
         run: |
-          ENV="${{ github.event.inputs.target_env }}"
+          TGT="${{ github.event.inputs.target_env }}"
 
-          if [ "$ENV" = "prod" ]; then
-            echo "TGT_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
-            echo "TGT_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "TGT_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
+          case "$TGT" in
+            dev)
+              echo "TGT_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
+              echo "TGT_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "TGT_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            sit)
+              echo "TGT_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
+              echo "TGT_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "TGT_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            uat)
+              echo "TGT_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
+              echo "TGT_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            prod)
+              echo "TGT_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
+              echo "TGT_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "TGT_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "❌ Invalid target_env"
+              exit 1
+              ;;
+          esac
 
-          elif [ "$ENV" = "uat" ]; then
-            echo "TGT_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
-            echo "TGT_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
-
-          elif [ "$ENV" = "dev" ]; then
-            echo "TGT_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
-            echo "TGT_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "TGT_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
-
-          else
-            echo "❌ Invalid target_env: $ENV"
+      # ✅ Validate URLs
+      - name: Validate URLs
+        run: |
+          if [ -z "$SRC_OIC_URL" ] || [ -z "$TGT_OIC_URL" ]; then
+            echo "❌ Missing OIC URLs"
             exit 1
           fi
 
-      # ✅ Validate URLs (IMPORTANT)
-      - name: Validate URLs
-        run: |
           echo "Source URL: $SRC_OIC_URL"
           echo "Target URL: $TGT_OIC_URL"
 
-          if [ -z "$SRC_OIC_URL" ] || [ -z "$TGT_OIC_URL" ]; then
-            echo "❌ Missing OIC URLs. Check secrets."
-            exit 1
-          fi
-
-      # ✅ Export from SIT
-      - name: Export from SIT
+      # ✅ Export from Source
+      - name: Export Integration
         run: |
-          echo "Exporting from SIT..."
+          echo "Exporting from ${{ github.event.inputs.source_env }}..."
 
           curl --fail \
           -u "$SRC_USER:$SRC_PASS" \
@@ -98,7 +143,7 @@ jobs:
           ls -lh $EXPORT_FILE
 
       # ✅ Import into Target
-      - name: Import to Target
+      - name: Import Integration
         run: |
           echo "Importing to ${{ github.event.inputs.target_env }}..."
 
@@ -109,7 +154,7 @@ jobs:
           -F "file=@$EXPORT_FILE"
 
       # ✅ Activate in Target
-      - name: Activate in Target
+      - name: Activate Integration
         run: |
           echo "Activating in ${{ github.event.inputs.target_env }}..."
 
@@ -120,4 +165,4 @@ jobs:
       # ✅ Done
       - name: Done
         run: |
-          echo "✅ Successfully deployed from SIT to ${{ github.event.inputs.target_env }}"
+          echo "✅ Deployment completed: ${{ github.event.inputs.source_env }} → ${{ github.event.inputs.target_env }}"
