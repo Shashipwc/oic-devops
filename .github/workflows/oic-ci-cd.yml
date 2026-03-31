@@ -121,48 +121,84 @@ jobs:
 
           echo "Source URL: $SRC_OIC_URL"
           echo "Target URL: $TGT_OIC_URL"
-
-      # ✅ Export from Source
+      # ✅ Export from Source (FIXED)
       - name: Export Integration
         run: |
           echo "Exporting from ${{ github.event.inputs.source_env }}..."
 
-          curl --fail \
+          ENCODED_ID=$(printf "%s|%s" "$INTEGRATION_NAME" "$INTEGRATION_VERSION" | sed 's/|/%7C/')
+
+          echo "Integration ID: $ENCODED_ID"
+          echo "Calling: $SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID"
+
+          curl -v --fail \
           -u "$SRC_USER:$SRC_PASS" \
-          -X GET "$SRC_OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/archive" \
+          -X GET "$SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
           -H "Accept: application/octet-stream" \
           -o $EXPORT_FILE
 
-      # ✅ Validate Export
+      # ✅ Validate Export (STRICT)
       - name: Validate Export
         run: |
+          echo "Validating export file..."
+
           if [ ! -f "$EXPORT_FILE" ]; then
-            echo "❌ Export failed"
+            echo "❌ Export file not found"
             exit 1
           fi
-          ls -lh $EXPORT_FILE
 
-      # ✅ Import into Target
+          if [ ! -s "$EXPORT_FILE" ]; then
+            echo "❌ Export file is EMPTY"
+            exit 1
+          fi
+
+          echo "File details:"
+          ls -lh $EXPORT_FILE
+          file $EXPORT_FILE
+
+          # Detect HTML error response
+          if file $EXPORT_FILE | grep -i html; then
+            echo "❌ Export returned HTML (likely API error)"
+            cat $EXPORT_FILE
+            exit 1
+          fi
+
+      # ✅ Import into Target (WITH RESPONSE CHECK)
       - name: Import Integration
         run: |
           echo "Importing to ${{ github.event.inputs.target_env }}..."
 
-          curl --fail \
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$TGT_USER:$TGT_PASS" \
           -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
           -H "Content-Type: multipart/form-data" \
-          -F "file=@$EXPORT_FILE"
+          -F "file=@$EXPORT_FILE")
 
-      # ✅ Activate in Target
+          echo "$RESPONSE"
+
+          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+            echo "❌ Import failed with status $STATUS"
+            exit 1
+          fi
+
+      # ✅ Activate in Target (FIXED + DEBUG)
       - name: Activate Integration
         run: |
           echo "Activating in ${{ github.event.inputs.target_env }}..."
 
-          curl --fail \
-          -u "$TGT_USER:$TGT_PASS" \
-          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/activate"
+          ENCODED_ID=$(printf "%s|%s" "$INTEGRATION_NAME" "$INTEGRATION_VERSION" | sed 's/|/%7C/')
 
-      # ✅ Done
-      - name: Done
-        run: |
-          echo "✅ Deployment completed: ${{ github.event.inputs.source_env }} → ${{ github.event.inputs.target_env }}"
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          -u "$TGT_USER:$TGT_PASS" \
+          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate")
+
+          echo "$RESPONSE"
+
+          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+            echo "❌ Activation failed with status $STATUS"
+            exit 1
+          fi
