@@ -93,17 +93,24 @@ jobs:
             echo "✅ Exported: $ID"
           done
 
-      # ✅ Upload Artifacts (GitHub storage)
+      # ✅ Upload Artifacts
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: oic-exports
           path: exports/
 
-      # ✅ Import Integrations into SIT
+      # ✅ Import Integrations into SIT (FIXED)
       - name: Import Integrations to SIT
         run: |
-          for FILE in exports/*.iar; do
+          FILES=$(ls exports/*.iar 2>/dev/null || true)
+
+          if [ -z "$FILES" ]; then
+            echo "⚠️ No files to import"
+            exit 0
+          fi
+
+          for FILE in $FILES; do
             echo "📤 Importing: $FILE"
 
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
@@ -120,10 +127,17 @@ jobs:
             echo "✅ Imported: $FILE"
           done
 
-      # ✅ Activate Integrations
+      # ✅ Activate Integrations (FIXED)
       - name: Activate Integrations in SIT
         run: |
-          for FILE in exports/*.iar; do
+          FILES=$(ls exports/*.iar 2>/dev/null || true)
+
+          if [ -z "$FILES" ]; then
+            echo "⚠️ No files to activate"
+            exit 0
+          fi
+
+          for FILE in $FILES; do
             BASENAME=$(basename "$FILE" .iar)
 
             NAME=$(echo "$BASENAME" | cut -d'-' -f1)
@@ -146,7 +160,7 @@ jobs:
             echo "✅ Activated: $NAME|$VERSION"
           done
 
-      # ✅ Final Summary
+      # ✅ Summary
       - name: Summary
         run: |
           echo "================ SUMMARY ================"
