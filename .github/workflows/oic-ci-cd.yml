@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ✅ Validate input
+      # ✅ Validate Environments
       - name: Validate Environments
         run: |
           if [ "${{ github.event.inputs.source_env }}" = "${{ github.event.inputs.target_env }}" ]; then
@@ -77,7 +77,6 @@ jobs:
               echo "TGT_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
               echo "TGT_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
               echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
-              echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
               ;;
             prod)
               echo "TGT_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
@@ -90,8 +89,8 @@ jobs:
               ;;
           esac
 
-      # ✅ Fetch all integrations
-      - name: Fetch Integrations from Source
+      # ✅ Fetch integrations from source
+      - name: Fetch Integrations
         run: |
           echo "Fetching integrations from source..."
 
@@ -100,15 +99,21 @@ jobs:
           "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1000" \
           -o integrations.json
 
-          cat integrations.json | jq '.items | length'
+          COUNT=$(jq '.items | length' integrations.json)
 
-      # ✅ Loop and Deploy
-      - name: Export → Import → Activate
+          echo "Total integrations found: $COUNT"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "❌ No integrations found in source"
+            exit 1
+          fi
+
+      # ✅ Export → Import → Activate with verification
+      - name: Migrate Integrations
         run: |
-          set -e
+          set -euo pipefail
 
           COUNT=$(jq '.items | length' integrations.json)
-          echo "Total integrations: $COUNT"
 
           for i in $(seq 0 $(($COUNT - 1))); do
 
@@ -134,37 +139,77 @@ jobs:
             -o "$FILE"
 
             if [ ! -s "$FILE" ]; then
-              echo "❌ Export failed for $ID"
+              echo "❌ Export failed (empty file): $ID"
+              exit 1
+            fi
+
+            TYPE=$(file "$FILE")
+            echo "File type: $TYPE"
+
+            if echo "$TYPE" | grep -i "html"; then
+              echo "❌ Export returned HTML → wrong URL or auth issue"
+              cat "$FILE"
               exit 1
             fi
 
             # 🔹 IMPORT
             echo "Importing..."
 
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
             -u "$TGT_USER:$TGT_PASS" \
             -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
             -H "Content-Type: multipart/form-data" \
             -F "file=@$FILE")
 
+            echo "$RESPONSE"
+
+            STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-              echo "❌ Import failed for $ID (HTTP $STATUS)"
+              echo "❌ Import failed: $ID"
+              exit 1
+            fi
+
+            # 🔹 VERIFY IMPORT
+            echo "Verifying import in target..."
+
+            CHECK=$(curl -s \
+            -u "$TGT_USER:$TGT_PASS" \
+            "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID")
+
+            echo "$CHECK" | jq '.code' || true
+
+            if echo "$CHECK" | grep -q "error"; then
+              echo "❌ Integration not found after import: $ID"
               exit 1
             fi
 
             # 🔹 ACTIVATE
             echo "Activating..."
 
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
             -u "$TGT_USER:$TGT_PASS" \
             -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate")
 
+            echo "$RESPONSE"
+
+            STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-              echo "❌ Activation failed for $ID (HTTP $STATUS)"
+              echo "❌ Activation failed: $ID"
               exit 1
             fi
 
-            echo "✅ Done: $ID"
+            # 🔹 VERIFY ACTIVATION
+            echo "Checking activation status..."
+
+            STATUS_CHECK=$(curl -s \
+            -u "$TGT_USER:$TGT_PASS" \
+            "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID")
+
+            echo "$STATUS_CHECK" | jq '.status' || true
+
+            echo "✅ Completed: $ID"
 
           done
 
