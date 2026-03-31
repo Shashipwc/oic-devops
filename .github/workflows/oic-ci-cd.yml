@@ -1,10 +1,10 @@
-name: Simple OIC Export Import
+name: OIC Deploy SIT to Target
 
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: "Environment (dev/sit/uat/prod)"
+      target_env:
+        description: "Target Environment (dev/uat/prod)"
         required: true
         default: "uat"
       integration:
@@ -15,17 +15,17 @@ env:
   EXPORT_FILE: integration.iar
 
 jobs:
-  oic-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
       # ✅ Show Inputs
       - name: Show Inputs
         run: |
-          echo "Env: ${{ github.event.inputs.environment }}"
+          echo "Target Env: ${{ github.event.inputs.target_env }}"
           echo "Integration: ${{ github.event.inputs.integration }}"
 
-      # ✅ Parse Integration Name & Version
+      # ✅ Parse Integration
       - name: Parse Integration
         run: |
           NAME=$(echo "${{ github.event.inputs.integration }}" | cut -d'|' -f1)
@@ -34,75 +34,90 @@ jobs:
           echo "INTEGRATION_NAME=$NAME" >> $GITHUB_ENV
           echo "INTEGRATION_VERSION=$VERSION" >> $GITHUB_ENV
 
-      # ✅ Set Credentials
-      - name: Set OIC Credentials
+      # ✅ SOURCE = SIT (always)
+      - name: Set Source (SIT)
         run: |
-          case "${{ github.event.inputs.environment }}" in
-            prod)
-              echo "OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
-              echo "OIC_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "OIC_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
-              ;;
-            uat)
-              echo "OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
-              echo "OIC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "OIC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
-              ;;
-            sit)
-              echo "OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
-              echo "OIC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "OIC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
-              ;;
-            *)
-              echo "OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
-              echo "OIC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "OIC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
-              ;;
-          esac
-      - name: Debug URL
-        run: |
-                    echo "OIC_URL=$OIC_URL"
+          echo "SRC_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
+          echo "SRC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
+          echo "SRC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
 
-      # ✅ Export Integration
-      - name: Export Integration
+      # ✅ TARGET = based on input
+      - name: Set Target
         run: |
-          echo "Exporting $INTEGRATION_NAME|$INTEGRATION_VERSION"
+          ENV="${{ github.event.inputs.target_env }}"
+
+          if [ "$ENV" = "prod" ]; then
+            echo "TGT_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
+            echo "TGT_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "TGT_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
+
+          elif [ "$ENV" = "uat" ]; then
+            echo "TGT_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
+            echo "TGT_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
+
+          elif [ "$ENV" = "dev" ]; then
+            echo "TGT_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
+            echo "TGT_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
+            echo "TGT_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
+
+          else
+            echo "❌ Invalid target_env: $ENV"
+            exit 1
+          fi
+
+      # ✅ Validate URLs (IMPORTANT)
+      - name: Validate URLs
+        run: |
+          echo "Source URL: $SRC_OIC_URL"
+          echo "Target URL: $TGT_OIC_URL"
+
+          if [ -z "$SRC_OIC_URL" ] || [ -z "$TGT_OIC_URL" ]; then
+            echo "❌ Missing OIC URLs. Check secrets."
+            exit 1
+          fi
+
+      # ✅ Export from SIT
+      - name: Export from SIT
+        run: |
+          echo "Exporting from SIT..."
 
           curl --fail \
-          -u "$OIC_USER:$OIC_PASS" \
-          -X GET "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/archive" \
+          -u "$SRC_USER:$SRC_PASS" \
+          -X GET "$SRC_OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/archive" \
           -H "Accept: application/octet-stream" \
           -o $EXPORT_FILE
 
-      # ✅ Check File
+      # ✅ Validate Export
       - name: Validate Export
         run: |
           if [ ! -f "$EXPORT_FILE" ]; then
-            echo "Export failed"
+            echo "❌ Export failed"
             exit 1
           fi
           ls -lh $EXPORT_FILE
 
-      # ✅ Import Integration
-      - name: Import Integration
+      # ✅ Import into Target
+      - name: Import to Target
         run: |
-          echo "Importing..."
+          echo "Importing to ${{ github.event.inputs.target_env }}..."
 
           curl --fail \
-          -u "$OIC_USER:$OIC_PASS" \
-          -X POST "$OIC_URL/ic/api/integration/v1/integrations/archive" \
+          -u "$TGT_USER:$TGT_PASS" \
+          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
           -H "Content-Type: multipart/form-data" \
           -F "file=@$EXPORT_FILE"
 
-      # ✅ Activate Integration
-      - name: Activate Integration
+      # ✅ Activate in Target
+      - name: Activate in Target
         run: |
-          echo "Activating..."
+          echo "Activating in ${{ github.event.inputs.target_env }}..."
 
           curl --fail \
-          -u "$OIC_USER:$OIC_PASS" \
-          -X POST "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/activate"
+          -u "$TGT_USER:$TGT_PASS" \
+          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/activate"
 
       # ✅ Done
       - name: Done
-        run: echo "Deployment completed successfully"
+        run: |
+          echo "✅ Successfully deployed from SIT to ${{ github.event.inputs.target_env }}"
