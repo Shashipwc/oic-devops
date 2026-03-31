@@ -1,73 +1,40 @@
-name: OIC Universal CI/CD Pipeline
+name: Simple OIC Export Import
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target Environment (dev/sit/uat/prod)"
+        description: "Environment (dev/sit/uat/prod)"
         required: true
         default: "sit"
-      integration_list:
-        description: 'JSON array (e.g. ["INTG1|01.00.0000","INTG2|02.00.0000"])'
+      integration:
+        description: "Integration (e.g. INTG1|01.00.0000)"
         required: true
 
 env:
   EXPORT_FILE: integration.iar
 
 jobs:
-  prepare-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      integrations: ${{ steps.set-matrix.outputs.integrations }}
-
-    steps:
-      - name: Validate and Prepare Matrix
-        id: set-matrix
-        run: |
-          echo "Raw input:"
-          echo '${{ github.event.inputs.integration_list }}'
-
-          # Validate JSON (this will fail fast if invalid)
-          echo '${{ github.event.inputs.integration_list }}' | jq . > integrations.json
-
-          echo "Validated JSON:"
-          cat integrations.json
-
-          # Set output properly (single-line JSON required)
-          echo "integrations=$(cat integrations.json | jq -c .)" >> $GITHUB_OUTPUT
-
   oic-deploy:
     runs-on: ubuntu-latest
-    needs: prepare-matrix
-
-    environment: ${{ github.event.inputs.environment }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        integration: ${{ fromJson(needs.prepare-matrix.outputs.integrations) }}
 
     steps:
-      # 🔹 Checkout Code
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # 🔹 Show Inputs
+      # ✅ Show Inputs
       - name: Show Inputs
         run: |
-          echo "Environment: ${{ github.event.inputs.environment }}"
-          echo "Integration: ${{ matrix.integration }}"
+          echo "Env: ${{ github.event.inputs.environment }}"
+          echo "Integration: ${{ github.event.inputs.integration }}"
 
-      # 🔹 Split Integration Name & Version
+      # ✅ Parse Integration Name & Version
       - name: Parse Integration
         run: |
-          NAME=$(echo "${{ matrix.integration }}" | cut -d'|' -f1)
-          VERSION=$(echo "${{ matrix.integration }}" | cut -d'|' -f2)
+          NAME=$(echo "${{ github.event.inputs.integration }}" | cut -d'|' -f1)
+          VERSION=$(echo "${{ github.event.inputs.integration }}" | cut -d'|' -f2)
 
           echo "INTEGRATION_NAME=$NAME" >> $GITHUB_ENV
           echo "INTEGRATION_VERSION=$VERSION" >> $GITHUB_ENV
 
-      # 🔹 Set OIC Credentials
+      # ✅ Set Credentials
       - name: Set OIC Credentials
         run: |
           case "${{ github.event.inputs.environment }}" in
@@ -93,61 +60,46 @@ jobs:
               ;;
           esac
 
-      # 🔹 Export Integration
+      # ✅ Export Integration
       - name: Export Integration
         run: |
-          echo "Exporting $INTEGRATION_NAME | $INTEGRATION_VERSION..."
+          echo "Exporting $INTEGRATION_NAME|$INTEGRATION_VERSION"
 
-          curl --fail --retry 3 --retry-delay 5 \
+          curl --fail \
           -u "$OIC_USER:$OIC_PASS" \
           -X GET "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/archive" \
           -H "Accept: application/octet-stream" \
           -o $EXPORT_FILE
 
-      # 🔹 Validate Export
+      # ✅ Check File
       - name: Validate Export
         run: |
           if [ ! -f "$EXPORT_FILE" ]; then
-            echo "Export failed!"
+            echo "Export failed"
             exit 1
           fi
           ls -lh $EXPORT_FILE
 
-      # 🔹 Upload Artifact
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: iar-${{ matrix.integration }}
-          path: ${{ env.EXPORT_FILE }}
-
-      # 🔹 Import Integration
+      # ✅ Import Integration
       - name: Import Integration
         run: |
-          echo "Importing $INTEGRATION_NAME..."
+          echo "Importing..."
 
-          curl --fail --retry 3 --retry-delay 5 \
+          curl --fail \
           -u "$OIC_USER:$OIC_PASS" \
           -X POST "$OIC_URL/ic/api/integration/v1/integrations/archive" \
           -H "Content-Type: multipart/form-data" \
           -F "file=@$EXPORT_FILE"
 
-      # 🔹 Activate Integration
+      # ✅ Activate Integration
       - name: Activate Integration
         run: |
-          echo "Activating $INTEGRATION_NAME..."
+          echo "Activating..."
 
-          curl --fail --retry 3 --retry-delay 5 \
+          curl --fail \
           -u "$OIC_USER:$OIC_PASS" \
           -X POST "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/activate"
 
-      # 🔹 Verify Integration
-      - name: Verify Integration
-        run: |
-          curl --fail \
-          -u "$OIC_USER:$OIC_PASS" \
-          "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION" \
-          | jq .
-
-      # 🔹 Cleanup
-      - name: Cleanup
-        run: rm -f $EXPORT_FILE
+      # ✅ Done
+      - name: Done
+        run: echo "Deployment completed successfully"
