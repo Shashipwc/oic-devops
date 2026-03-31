@@ -22,6 +22,16 @@ jobs:
           echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> $GITHUB_ENV
           echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> $GITHUB_ENV
           echo "SCOPE=${{ secrets.OIC_SCOPE }}" >> $GITHUB_ENV
+          - name: Set Variables
+            env:
+                  SRC_URL: ${{ secrets.UAT_OIC_URL }}
+                  TGT_URL: ${{ secrets.SIT_OIC_URL }}
+                 DOMAIN: ${{ secrets.OCI_DOMAIN_URL }}
+                 CLIENT_ID: ${{ secrets.CLIENT_ID }}
+                 CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+                SCOPE: ${{ secrets.OIC_SCOPE }}
+            run: |
+                        echo "✅ Variables loaded"
 
       # 🔐 STEP 1: Get OAuth Token
       - name: Get Token
