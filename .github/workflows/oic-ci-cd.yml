@@ -1,19 +1,10 @@
-name: OIC Connection Validation
+name: OIC Migration UAT to SIT (Auto)
 
 on:
   workflow_dispatch:
-    inputs:
-      source_env:
-        description: "Source Environment (dev/sit/uat/prod)"
-        required: true
-        default: "sit"
-      target_env:
-        description: "Target Environment (dev/sit/uat/prod)"
-        required: true
-        default: "uat"
 
 jobs:
-  validate:
+  migrate:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,105 +12,152 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # ✅ Set credentials
+      # ✅ Set Credentials (HARDCODED ENV)
       - name: Set Credentials
         run: |
-          SRC="${{ github.event.inputs.source_env }}"
-          TGT="${{ github.event.inputs.target_env }}"
+          echo "SRC_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
+          echo "SRC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
+          echo "SRC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
 
-          case "$SRC" in
-            dev)
-              echo "SRC_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
-              echo "SRC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "SRC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-            sit)
-              echo "SRC_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
-              echo "SRC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "SRC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-            uat)
-              echo "SRC_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
-              echo "SRC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "SRC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-            prod)
-              echo "SRC_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
-              echo "SRC_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "SRC_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-          esac
+          echo "TGT_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
+          echo "TGT_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
+          echo "TGT_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
 
-          case "$TGT" in
-            dev)
-              echo "TGT_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
-              echo "TGT_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "TGT_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-            sit)
-              echo "TGT_OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
-              echo "TGT_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "TGT_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-            uat)
-              echo "TGT_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
-              echo "TGT_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-            prod)
-              echo "TGT_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
-              echo "TGT_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
-              echo "TGT_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
-          esac
+          echo "Source: UAT → $SRC_OIC_URL"
+          echo "Target: SIT → $TGT_OIC_URL"
 
-      # ✅ Validate SOURCE
-      - name: Validate Source OIC
+      # ✅ Validate Connections
+      - name: Validate Source & Target
         run: |
-          echo "======================================"
-          echo "🔍 VALIDATING SOURCE"
-          echo "URL: $SRC_OIC_URL"
-          echo "======================================"
-
-          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
+          echo "🔍 Validating SOURCE (UAT)..."
+          SRC_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
           -u "$SRC_USER:$SRC_PASS" \
           "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1")
 
-          echo "$RESPONSE"
+          echo "SOURCE HTTP STATUS: $SRC_STATUS"
 
-          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
-
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ SOURCE FAILED"
-            echo "Reason:"
-            echo "- Wrong URL OR"
-            echo "- Wrong credentials OR"
-            echo "- Missing roles (ServiceDeveloper)"
-            exit 1
-          fi
-
-          echo "✅ SOURCE CONNECTION SUCCESS"
-
-      # ✅ Validate TARGET
-      - name: Validate Target OIC
-        run: |
-          echo "======================================"
-          echo "🔍 VALIDATING TARGET"
-          echo "URL: $TGT_OIC_URL"
-          echo "======================================"
-
-          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
+          echo "🔍 Validating TARGET (SIT)..."
+          TGT_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
           -u "$TGT_USER:$TGT_PASS" \
           "$TGT_OIC_URL/ic/api/integration/v1/integrations?limit=1")
 
-          echo "$RESPONSE"
+          echo "TARGET HTTP STATUS: $TGT_STATUS"
 
-          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+      # ✅ Fetch Integrations
+      - name: Fetch Integrations from UAT
+        run: |
+          echo "📥 Fetching integrations from UAT..."
 
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ TARGET FAILED"
-            echo "Reason:"
-            echo "- Wrong URL OR"
-            echo "- Wrong credentials OR"
-            echo "- Missing roles"
-            exit 1
-          fi
+          curl -s -L \
+          -u "$SRC_USER:$SRC_PASS" \
+          "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1000" \
+          -o integrations.json
 
-          echo "✅ TARGET CONNECTION SUCCESS"
+          COUNT=$(jq '.items | length // 0' integrations.json)
+          echo "Total integrations found: $COUNT"
 
-      # ✅ Summary
+      # ✅ Export Integrations
+      - name: Export Integrations
+        run: |
+          mkdir -p exports
+
+          COUNT=$(jq '.items | length // 0' integrations.json)
+
+          for i in $(seq 0 $(($COUNT - 1))); do
+            NAME=$(jq -r ".items[$i].code" integrations.json | xargs)
+            VERSION=$(jq -r ".items[$i].version" integrations.json | xargs)
+
+            ID="$NAME|$VERSION"
+            ENCODED=$(printf "%s%%7C%s" "$NAME" "$VERSION")
+
+            FILE="exports/$NAME-$VERSION.iar"
+
+            echo "📦 Exporting: $ID"
+
+            STATUS=$(curl -s -L -o "$FILE" -w "%{http_code}" \
+            -u "$SRC_USER:$SRC_PASS" \
+            "$SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED")
+
+            if [ "$STATUS" != "200" ]; then
+              echo "❌ Export failed: $ID"
+              echo "$ID" >> failed_exports.txt
+              continue
+            fi
+
+            if [ ! -s "$FILE" ]; then
+              echo "❌ Empty export: $ID"
+              echo "$ID" >> failed_exports.txt
+              continue
+            fi
+
+            echo "✅ Exported: $ID"
+          done
+
+      # ✅ Upload Artifacts (GitHub storage)
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: oic-exports
+          path: exports/
+
+      # ✅ Import Integrations into SIT
+      - name: Import Integrations to SIT
+        run: |
+          for FILE in exports/*.iar; do
+            echo "📤 Importing: $FILE"
+
+            STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+            -u "$TGT_USER:$TGT_PASS" \
+            -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
+            -F "file=@$FILE")
+
+            if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "❌ Import failed: $FILE"
+              echo "$FILE" >> failed_imports.txt
+              continue
+            fi
+
+            echo "✅ Imported: $FILE"
+          done
+
+      # ✅ Activate Integrations
+      - name: Activate Integrations in SIT
+        run: |
+          for FILE in exports/*.iar; do
+            BASENAME=$(basename "$FILE" .iar)
+
+            NAME=$(echo "$BASENAME" | cut -d'-' -f1)
+            VERSION=$(echo "$BASENAME" | cut -d'-' -f2)
+
+            ENCODED=$(printf "%s%%7C%s" "$NAME" "$VERSION")
+
+            echo "⚡ Activating: $NAME|$VERSION"
+
+            STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+            -u "$TGT_USER:$TGT_PASS" \
+            -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED/activate")
+
+            if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "❌ Activation failed: $NAME|$VERSION"
+              echo "$NAME|$VERSION" >> failed_activation.txt
+              continue
+            fi
+
+            echo "✅ Activated: $NAME|$VERSION"
+          done
+
+      # ✅ Final Summary
       - name: Summary
         run: |
-          echo "🎉 BOTH SOURCE AND TARGET ARE VALID"
+          echo "================ SUMMARY ================"
+
+          echo "❌ Failed Exports:"
+          cat failed_exports.txt 2>/dev/null || echo "None"
+
+          echo "❌ Failed Imports:"
+          cat failed_imports.txt 2>/dev/null || echo "None"
+
+          echo "❌ Failed Activations:"
+          cat failed_activation.txt 2>/dev/null || echo "None"
+
+          echo "========================================="
