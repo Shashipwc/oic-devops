@@ -21,11 +21,20 @@ jobs:
       integrations: ${{ steps.set-matrix.outputs.integrations }}
 
     steps:
-      - name: Prepare Matrix
+      - name: Validate and Prepare Matrix
         id: set-matrix
         run: |
-          echo "Integrations input: ${{ github.event.inputs.integration_list }}"
-          echo "integrations=${{ github.event.inputs.integration_list }}" >> $GITHUB_OUTPUT
+          echo "Raw input:"
+          echo '${{ github.event.inputs.integration_list }}'
+
+          # Validate JSON (this will fail fast if invalid)
+          echo '${{ github.event.inputs.integration_list }}' | jq . > integrations.json
+
+          echo "Validated JSON:"
+          cat integrations.json
+
+          # Set output properly (single-line JSON required)
+          echo "integrations=$(cat integrations.json | jq -c .)" >> $GITHUB_OUTPUT
 
   oic-deploy:
     runs-on: ubuntu-latest
@@ -43,13 +52,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 🔹 Print Inputs
+      # 🔹 Show Inputs
       - name: Show Inputs
         run: |
           echo "Environment: ${{ github.event.inputs.environment }}"
           echo "Integration: ${{ matrix.integration }}"
 
-      # 🔹 Set Environment-Specific Credentials
+      # 🔹 Split Integration Name & Version
+      - name: Parse Integration
+        run: |
+          NAME=$(echo "${{ matrix.integration }}" | cut -d'|' -f1)
+          VERSION=$(echo "${{ matrix.integration }}" | cut -d'|' -f2)
+
+          echo "INTEGRATION_NAME=$NAME" >> $GITHUB_ENV
+          echo "INTEGRATION_VERSION=$VERSION" >> $GITHUB_ENV
+
+      # 🔹 Set OIC Credentials
       - name: Set OIC Credentials
         run: |
           case "${{ github.event.inputs.environment }}" in
@@ -78,10 +96,11 @@ jobs:
       # 🔹 Export Integration
       - name: Export Integration
         run: |
-          echo "Exporting ${{ matrix.integration }}..."
+          echo "Exporting $INTEGRATION_NAME | $INTEGRATION_VERSION..."
+
           curl --fail --retry 3 --retry-delay 5 \
           -u "$OIC_USER:$OIC_PASS" \
-          -X GET "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}/archive" \
+          -X GET "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/archive" \
           -H "Accept: application/octet-stream" \
           -o $EXPORT_FILE
 
@@ -104,7 +123,8 @@ jobs:
       # 🔹 Import Integration
       - name: Import Integration
         run: |
-          echo "Importing ${{ matrix.integration }}..."
+          echo "Importing $INTEGRATION_NAME..."
+
           curl --fail --retry 3 --retry-delay 5 \
           -u "$OIC_USER:$OIC_PASS" \
           -X POST "$OIC_URL/ic/api/integration/v1/integrations/archive" \
@@ -114,17 +134,18 @@ jobs:
       # 🔹 Activate Integration
       - name: Activate Integration
         run: |
-          echo "Activating ${{ matrix.integration }}..."
+          echo "Activating $INTEGRATION_NAME..."
+
           curl --fail --retry 3 --retry-delay 5 \
           -u "$OIC_USER:$OIC_PASS" \
-          -X POST "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}/activate"
+          -X POST "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION/activate"
 
-      # 🔹 Verify Deployment
+      # 🔹 Verify Integration
       - name: Verify Integration
         run: |
           curl --fail \
           -u "$OIC_USER:$OIC_PASS" \
-          "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}" \
+          "$OIC_URL/ic/api/integration/v1/integrations/$INTEGRATION_NAME|$INTEGRATION_VERSION" \
           | jq .
 
       # 🔹 Cleanup
