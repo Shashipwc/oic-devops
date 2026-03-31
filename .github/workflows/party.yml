@@ -12,14 +12,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Set Variables
-        run: |
-          echo "SRC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
-          echo "TGT_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
-
-          echo "DOMAIN=${{ secrets.OCI_DOMAIN_URL }}" >> $GITHUB_ENV
-          echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> $GITHUB_ENV
-          echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> $GITHUB_ENV
-          echo "SCOPE=${{ secrets.OIC_SCOPE }}" >> $GITHUB_ENV
+        env:
+                 SRC_URL: ${{ secrets.UAT_OIC_URL }}
+                 TGT_URL: ${{ secrets.SIT_OIC_URL }}
+                 DOMAIN: ${{ secrets.OCI_DOMAIN_URL }}
+                 CLIENT_ID: ${{ secrets.CLIENT_ID }}
+                 CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+                 SCOPE: ${{ secrets.OIC_SCOPE }}
+             run: |
+                   echo "✅ Variables loaded"
 
       # 🔐 TOKEN
       - name: Get Token
