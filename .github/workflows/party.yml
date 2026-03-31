@@ -9,18 +9,16 @@ jobs:
 
     steps:
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
       - name: Set Variables
-        env:
-                 SRC_URL: ${{ secrets.UAT_OIC_URL }}
-                 TGT_URL: ${{ secrets.SIT_OIC_URL }}
-                 DOMAIN: ${{ secrets.OCI_DOMAIN_URL }}
-                 CLIENT_ID: ${{ secrets.CLIENT_ID }}
-                 CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-                 SCOPE: ${{ secrets.OIC_SCOPE }}
-             run: |
-                   echo "✅ Variables loaded"
+       run: |
+         {
+         echo "SRC_URL=${{ secrets.UAT_OIC_URL }}"
+         echo "TGT_URL=${{ secrets.SIT_OIC_URL }}"
+         echo "DOMAIN=${{ secrets.OCI_DOMAIN_URL }}"
+         echo "CLIENT_ID=${{ secrets.CLIENT_ID }}"
+         echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}"
+          echo "SCOPE=${{ secrets.OIC_SCOPE }}"
+         } >> $GITHUB_ENV
 
       # 🔐 TOKEN
       - name: Get Token
