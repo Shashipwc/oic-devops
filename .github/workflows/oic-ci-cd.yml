@@ -6,7 +6,7 @@ on:
       environment:
         description: "Environment (dev/sit/uat/prod)"
         required: true
-        default: "sit"
+        default: "uat"
       integration:
         description: "Integration (e.g. INTG1|01.00.0000)"
         required: true
