@@ -1,4 +1,4 @@
-name: OIC Deploy (Any Env to Any Env)
+name: OIC Full Migration (All Integrations)
 
 on:
   workflow_dispatch:
@@ -11,26 +11,13 @@ on:
         description: "Target Environment (dev/sit/uat/prod)"
         required: true
         default: "uat"
-      integration:
-        description: "Integration (e.g. INTG1|01.00.0000)"
-        required: true
-
-env:
-  EXPORT_FILE: integration.iar
 
 jobs:
-  deploy:
+  migrate:
     runs-on: ubuntu-latest
 
     steps:
-      # ✅ Show Inputs
-      - name: Show Inputs
-        run: |
-          echo "Source: ${{ github.event.inputs.source_env }}"
-          echo "Target: ${{ github.event.inputs.target_env }}"
-          echo "Integration: ${{ github.event.inputs.integration }}"
-
-      # ❌ Prevent same environment deployment
+      # ✅ Validate input
       - name: Validate Environments
         run: |
           if [ "${{ github.event.inputs.source_env }}" = "${{ github.event.inputs.target_env }}" ]; then
@@ -38,21 +25,14 @@ jobs:
             exit 1
           fi
 
-      # ✅ Parse Integration
-      - name: Parse Integration
-        run: |
-          NAME=$(echo "${{ github.event.inputs.integration }}" | cut -d'|' -f1)
-          VERSION=$(echo "${{ github.event.inputs.integration }}" | cut -d'|' -f2)
-
-          echo "INTEGRATION_NAME=$NAME" >> $GITHUB_ENV
-          echo "INTEGRATION_VERSION=$VERSION" >> $GITHUB_ENV
+      # ✅ Install jq
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       # ✅ Set SOURCE credentials
       - name: Set Source Credentials
         run: |
-          SRC="${{ github.event.inputs.source_env }}"
-
-          case "$SRC" in
+          case "${{ github.event.inputs.source_env }}" in
             dev)
               echo "SRC_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
               echo "SRC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
@@ -82,9 +62,7 @@ jobs:
       # ✅ Set TARGET credentials
       - name: Set Target Credentials
         run: |
-          TGT="${{ github.event.inputs.target_env }}"
-
-          case "$TGT" in
+          case "${{ github.event.inputs.target_env }}" in
             dev)
               echo "TGT_OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
               echo "TGT_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
@@ -99,6 +77,7 @@ jobs:
               echo "TGT_OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
               echo "TGT_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
               echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              echo "TGT_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
               ;;
             prod)
               echo "TGT_OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
@@ -111,94 +90,84 @@ jobs:
               ;;
           esac
 
-      # ✅ Validate URLs
-      - name: Validate URLs
+      # ✅ Fetch all integrations
+      - name: Fetch Integrations from Source
         run: |
-          if [ -z "$SRC_OIC_URL" ] || [ -z "$TGT_OIC_URL" ]; then
-            echo "❌ Missing OIC URLs"
-            exit 1
-          fi
+          echo "Fetching integrations from source..."
 
-          echo "Source URL: $SRC_OIC_URL"
-          echo "Target URL: $TGT_OIC_URL"
-      # ✅ Export from Source (FIXED)
-      - name: Export Integration
-        run: |
-          echo "Exporting from ${{ github.event.inputs.source_env }}..."
-
-          ENCODED_ID=$(printf "%s|%s" "$INTEGRATION_NAME" "$INTEGRATION_VERSION" | sed 's/|/%7C/')
-
-          echo "Integration ID: $ENCODED_ID"
-          echo "Calling: $SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID"
-
-          curl -v --fail \
+          curl --fail -s \
           -u "$SRC_USER:$SRC_PASS" \
-          -X GET "$SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
-          -H "Accept: application/octet-stream" \
-          -o $EXPORT_FILE
+          "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1000" \
+          -o integrations.json
 
-      # ✅ Validate Export (STRICT)
-      - name: Validate Export
+          cat integrations.json | jq '.items | length'
+
+      # ✅ Loop and Deploy
+      - name: Export → Import → Activate
         run: |
-          echo "Validating export file..."
+          set -e
 
-          if [ ! -f "$EXPORT_FILE" ]; then
-            echo "❌ Export file not found"
-            exit 1
-          fi
+          COUNT=$(jq '.items | length' integrations.json)
+          echo "Total integrations: $COUNT"
 
-          if [ ! -s "$EXPORT_FILE" ]; then
-            echo "❌ Export file is EMPTY"
-            exit 1
-          fi
+          for i in $(seq 0 $(($COUNT - 1))); do
 
-          echo "File details:"
-          ls -lh $EXPORT_FILE
-          file $EXPORT_FILE
+            NAME=$(jq -r ".items[$i].code" integrations.json | xargs)
+            VERSION=$(jq -r ".items[$i].version" integrations.json | xargs)
 
-          # Detect HTML error response
-          if file $EXPORT_FILE | grep -i html; then
-            echo "❌ Export returned HTML (likely API error)"
-            cat $EXPORT_FILE
-            exit 1
-          fi
+            ID="$NAME|$VERSION"
+            ENCODED_ID=$(printf "%s%%7C%s" "$NAME" "$VERSION")
 
-      # ✅ Import into Target (WITH RESPONSE CHECK)
-      - name: Import Integration
-        run: |
-          echo "Importing to ${{ github.event.inputs.target_env }}..."
+            echo "========================================"
+            echo "Processing: $ID"
+            echo "========================================"
 
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
-          -u "$TGT_USER:$TGT_PASS" \
-          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
-          -H "Content-Type: multipart/form-data" \
-          -F "file=@$EXPORT_FILE")
+            FILE="$NAME-$VERSION.iar"
 
-          echo "$RESPONSE"
+            # 🔹 EXPORT
+            echo "Exporting..."
 
-          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+            curl --fail -s \
+            -u "$SRC_USER:$SRC_PASS" \
+            "$SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
+            -H "Accept: application/octet-stream" \
+            -o "$FILE"
 
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-            echo "❌ Import failed with status $STATUS"
-            exit 1
-          fi
+            if [ ! -s "$FILE" ]; then
+              echo "❌ Export failed for $ID"
+              exit 1
+            fi
 
-      # ✅ Activate in Target (FIXED + DEBUG)
-      - name: Activate Integration
-        run: |
-          echo "Activating in ${{ github.event.inputs.target_env }}..."
+            # 🔹 IMPORT
+            echo "Importing..."
 
-          ENCODED_ID=$(printf "%s|%s" "$INTEGRATION_NAME" "$INTEGRATION_VERSION" | sed 's/|/%7C/')
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -u "$TGT_USER:$TGT_PASS" \
+            -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
+            -H "Content-Type: multipart/form-data" \
+            -F "file=@$FILE")
 
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
-          -u "$TGT_USER:$TGT_PASS" \
-          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate")
+            if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "❌ Import failed for $ID (HTTP $STATUS)"
+              exit 1
+            fi
 
-          echo "$RESPONSE"
+            # 🔹 ACTIVATE
+            echo "Activating..."
 
-          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -u "$TGT_USER:$TGT_PASS" \
+            -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate")
 
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-            echo "❌ Activation failed with status $STATUS"
-            exit 1
-          fi
+            if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "❌ Activation failed for $ID (HTTP $STATUS)"
+              exit 1
+            fi
+
+            echo "✅ Done: $ID"
+
+          done
+
+      # ✅ Done
+      - name: Completed
+        run: echo "🎉 Full OIC migration completed successfully"
