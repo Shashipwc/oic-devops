@@ -21,6 +21,8 @@ jobs:
           echo "SCOPE=${{ secrets.OIC_SCOPE }}"
          } >> $GITHUB_ENV
 
+         
+
       # 🔐 TOKEN
       - name: Get Token
         run: |
@@ -28,6 +30,9 @@ jobs:
             -u "$CLIENT_ID:$CLIENT_SECRET" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             -d "grant_type=client_credentials&scope=$SCOPE")
+               echo "========== TOKEN RESPONSE =========="
+               echo "$RESPONSE"
+              echo "===================================="
 
           TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
 
@@ -37,7 +42,7 @@ jobs:
           fi
 
           echo "TOKEN=$TOKEN" >> $GITHUB_ENV
-
+          
       # 🔍 VALIDATE
       - name: Validate Connections
         run: |
