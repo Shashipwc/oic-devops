@@ -1,4 +1,4 @@
-name: OIC Migration (Debug Mode - Fixed)
+name: OIC Connection Validation
 
 on:
   workflow_dispatch:
@@ -6,33 +6,22 @@ on:
       source_env:
         description: "Source Environment (dev/sit/uat/prod)"
         required: true
-        default: "uat"
+        default: "sit"
       target_env:
         description: "Target Environment (dev/sit/uat/prod)"
         required: true
-        default: "sit"
+        default: "uat"
 
 jobs:
-  migrate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      # ✅ Validate Inputs
-      - name: Validate Environments
-        run: |
-          echo "Source: ${{ github.event.inputs.source_env }}"
-          echo "Target: ${{ github.event.inputs.target_env }}"
-
-          if [ "${{ github.event.inputs.source_env }}" = "${{ github.event.inputs.target_env }}" ]; then
-            echo "❌ Source and Target cannot be same"
-            exit 1
-          fi
-
       # ✅ Install jq
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # ✅ Set Credentials
+      # ✅ Set credentials
       - name: Set Credentials
         run: |
           SRC="${{ github.event.inputs.source_env }}"
@@ -76,126 +65,61 @@ jobs:
               echo "TGT_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV ;;
           esac
 
-          echo "Source URL: $SRC_OIC_URL"
-          echo "Target URL: $TGT_OIC_URL"
-
-      # ✅ Validate Source API (FIXED with -L)
-      - name: Validate Source API
+      # ✅ Validate SOURCE
+      - name: Validate Source OIC
         run: |
-          echo "Checking source connectivity..."
+          echo "======================================"
+          echo "🔍 VALIDATING SOURCE"
+          echo "URL: $SRC_OIC_URL"
+          echo "======================================"
 
-          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
+          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$SRC_USER:$SRC_PASS" \
-          "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1" \
-          -o src_check.txt
+          "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1")
 
-          cat src_check.txt
+          echo "$RESPONSE"
 
-          STATUS=$(tail -n1 src_check.txt | cut -d':' -f2)
+          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
 
           if [ "$STATUS" != "200" ]; then
-            echo "❌ Source API failed (Status: $STATUS)"
+            echo "❌ SOURCE FAILED"
+            echo "Reason:"
+            echo "- Wrong URL OR"
+            echo "- Wrong credentials OR"
+            echo "- Missing roles (ServiceDeveloper)"
             exit 1
           fi
 
-      # ✅ Fetch Integrations
-      - name: Fetch Integrations
+          echo "✅ SOURCE CONNECTION SUCCESS"
+
+      # ✅ Validate TARGET
+      - name: Validate Target OIC
         run: |
-          echo "Fetching integrations..."
+          echo "======================================"
+          echo "🔍 VALIDATING TARGET"
+          echo "URL: $TGT_OIC_URL"
+          echo "======================================"
 
-          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
-          -u "$SRC_USER:$SRC_PASS" \
-          "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1000" \
-          -o response.txt
-
-          cat response.txt
-
-          STATUS=$(tail -n1 response.txt | cut -d':' -f2)
-
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ Failed to fetch integrations (Status: $STATUS)"
-            exit 1
-          fi
-
-          head -n -1 response.txt > integrations.json
-
-          COUNT=$(jq '.items | length // 0' integrations.json)
-
-          echo "Total integrations: $COUNT"
-
-          if [ "$COUNT" -eq 0 ]; then
-            echo "❌ No integrations found"
-            exit 1
-          fi
-
-      # ✅ Test First Integration (Debug Mode)
-      - name: Test First Integration
-        run: |
-          set -e
-
-          NAME=$(jq -r ".items[0].code" integrations.json | xargs)
-          VERSION=$(jq -r ".items[0].version" integrations.json | xargs)
-
-          ID="$NAME|$VERSION"
-          ENCODED_ID=$(printf "%s%%7C%s" "$NAME" "$VERSION")
-
-          echo "Testing integration: $ID"
-
-          FILE="test.iar"
-
-          # EXPORT
-          echo "Exporting..."
-
-          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
-          -u "$SRC_USER:$SRC_PASS" \
-          "$SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
-          -o export.txt
-
-          cat export.txt
-
-          STATUS=$(tail -n1 export.txt | cut -d':' -f2)
-
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ Export failed (Status: $STATUS)"
-            exit 1
-          fi
-
-          head -n -1 export.txt > $FILE
-          file $FILE
-
-          # IMPORT
-          echo "Importing..."
-
-          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
+          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$TGT_USER:$TGT_PASS" \
-          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
-          -F "file=@$FILE" \
-          -o import.txt
+          "$TGT_OIC_URL/ic/api/integration/v1/integrations?limit=1")
 
-          cat import.txt
+          echo "$RESPONSE"
 
-          STATUS=$(tail -n1 import.txt | cut -d':' -f2)
+          STATUS=$(echo "$RESPONSE" | grep HTTP_STATUS | cut -d':' -f2)
 
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-            echo "❌ Import failed (Status: $STATUS)"
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ TARGET FAILED"
+            echo "Reason:"
+            echo "- Wrong URL OR"
+            echo "- Wrong credentials OR"
+            echo "- Missing roles"
             exit 1
           fi
 
-          # ACTIVATE
-          echo "Activating..."
+          echo "✅ TARGET CONNECTION SUCCESS"
 
-          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
-          -u "$TGT_USER:$TGT_PASS" \
-          -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate" \
-          -o activate.txt
-
-          cat activate.txt
-
-          STATUS=$(tail -n1 activate.txt | cut -d':' -f2)
-
-          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-            echo "❌ Activation failed (Status: $STATUS)"
-            exit 1
-          fi
-
-          echo "✅ Debug flow completed successfully"
+      # ✅ Summary
+      - name: Summary
+        run: |
+          echo "🎉 BOTH SOURCE AND TARGET ARE VALID"
