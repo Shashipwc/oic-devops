@@ -15,15 +15,28 @@ env:
   EXPORT_FILE: integration.iar
 
 jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      integrations: ${{ steps.set-matrix.outputs.integrations }}
+
+    steps:
+      - name: Prepare Matrix
+        id: set-matrix
+        run: |
+          echo "Integrations input: ${{ github.event.inputs.integration_list }}"
+          echo "integrations=${{ github.event.inputs.integration_list }}" >> $GITHUB_OUTPUT
+
   oic-deploy:
     runs-on: ubuntu-latest
+    needs: prepare-matrix
 
     environment: ${{ github.event.inputs.environment }}
 
     strategy:
       fail-fast: false
       matrix:
-        integration: ${{ fromJson(github.event.inputs.integration_list) }}
+        integration: ${{ fromJson(needs.prepare-matrix.outputs.integrations) }}
 
     steps:
       # 🔹 Checkout Code
@@ -39,25 +52,30 @@ jobs:
       # 🔹 Set Environment-Specific Credentials
       - name: Set OIC Credentials
         run: |
-          if [[ "${{ github.event.inputs.environment }}" == "prod" ]]; then
-            echo "OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
-            echo "OIC_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "OIC_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
-          elif [[ "${{ github.event.inputs.environment }}" == "uat" ]]; then
-            echo "OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
-            echo "OIC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "OIC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
-          elif [[ "${{ github.event.inputs.environment }}" == "sit" ]]; then
-            echo "OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
-            echo "OIC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "OIC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
-          else
-            echo "OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
-            echo "OIC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
-            echo "OIC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
-          fi
+          case "${{ github.event.inputs.environment }}" in
+            prod)
+              echo "OIC_URL=${{ secrets.PROD_OIC_URL }}" >> $GITHUB_ENV
+              echo "OIC_USER=${{ secrets.PROD_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "OIC_PASS=${{ secrets.PROD_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            uat)
+              echo "OIC_URL=${{ secrets.UAT_OIC_URL }}" >> $GITHUB_ENV
+              echo "OIC_USER=${{ secrets.UAT_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "OIC_PASS=${{ secrets.UAT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            sit)
+              echo "OIC_URL=${{ secrets.SIT_OIC_URL }}" >> $GITHUB_ENV
+              echo "OIC_USER=${{ secrets.SIT_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "OIC_PASS=${{ secrets.SIT_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "OIC_URL=${{ secrets.DEV_OIC_URL }}" >> $GITHUB_ENV
+              echo "OIC_USER=${{ secrets.DEV_OIC_USERNAME }}" >> $GITHUB_ENV
+              echo "OIC_PASS=${{ secrets.DEV_OIC_PASSWORD }}" >> $GITHUB_ENV
+              ;;
+          esac
 
-      # 🔹 Export Integration from Source OIC
+      # 🔹 Export Integration
       - name: Export Integration
         run: |
           echo "Exporting ${{ matrix.integration }}..."
@@ -67,24 +85,23 @@ jobs:
           -H "Accept: application/octet-stream" \
           -o $EXPORT_FILE
 
-      # 🔹 Validate Export File
+      # 🔹 Validate Export
       - name: Validate Export
         run: |
           if [ ! -f "$EXPORT_FILE" ]; then
             echo "Export failed!"
             exit 1
           fi
-          echo "Export successful:"
           ls -lh $EXPORT_FILE
 
-      # 🔹 Upload Artifact (for audit/debug)
+      # 🔹 Upload Artifact
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: iar-${{ matrix.integration }}
           path: ${{ env.EXPORT_FILE }}
 
-      # 🔹 Import Integration into Target OIC
+      # 🔹 Import Integration
       - name: Import Integration
         run: |
           echo "Importing ${{ matrix.integration }}..."
@@ -105,7 +122,6 @@ jobs:
       # 🔹 Verify Deployment
       - name: Verify Integration
         run: |
-          echo "Verifying ${{ matrix.integration }}..."
           curl --fail \
           -u "$OIC_USER:$OIC_PASS" \
           "$OIC_URL/ic/api/integration/v1/integrations/${{ matrix.integration }}" \
