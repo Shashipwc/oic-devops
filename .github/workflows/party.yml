@@ -11,7 +11,7 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Set Variables
-       run: |
+        run: |
          {
          echo "SRC_URL=${{ secrets.UAT_OIC_URL }}"
          echo "TGT_URL=${{ secrets.SIT_OIC_URL }}"
