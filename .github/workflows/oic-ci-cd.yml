@@ -1,4 +1,4 @@
-name: OIC Migration (Debug Mode)
+name: OIC Migration (Debug Mode - Fixed)
 
 on:
   workflow_dispatch:
@@ -6,18 +6,18 @@ on:
       source_env:
         description: "Source Environment (dev/sit/uat/prod)"
         required: true
-        default: "sit"
+        default: "uat"
       target_env:
         description: "Target Environment (dev/sit/uat/prod)"
         required: true
-        default: "uat"
+        default: "sit"
 
 jobs:
   migrate:
     runs-on: ubuntu-latest
 
     steps:
-      # ✅ Step 1: Validate Inputs
+      # ✅ Validate Inputs
       - name: Validate Environments
         run: |
           echo "Source: ${{ github.event.inputs.source_env }}"
@@ -28,11 +28,11 @@ jobs:
             exit 1
           fi
 
-      # ✅ Step 2: Install jq
+      # ✅ Install jq
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # ✅ Step 3: Set Credentials
+      # ✅ Set Credentials
       - name: Set Credentials
         run: |
           SRC="${{ github.event.inputs.source_env }}"
@@ -79,12 +79,12 @@ jobs:
           echo "Source URL: $SRC_OIC_URL"
           echo "Target URL: $TGT_OIC_URL"
 
-      # ✅ Step 4: Validate Source API
+      # ✅ Validate Source API (FIXED with -L)
       - name: Validate Source API
         run: |
           echo "Checking source connectivity..."
 
-          curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$SRC_USER:$SRC_PASS" \
           "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1" \
           -o src_check.txt
@@ -94,16 +94,16 @@ jobs:
           STATUS=$(tail -n1 src_check.txt | cut -d':' -f2)
 
           if [ "$STATUS" != "200" ]; then
-            echo "❌ Source API not reachable or auth failed"
+            echo "❌ Source API failed (Status: $STATUS)"
             exit 1
           fi
 
-      # ✅ Step 5: Fetch Integrations
+      # ✅ Fetch Integrations
       - name: Fetch Integrations
         run: |
           echo "Fetching integrations..."
 
-          curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$SRC_USER:$SRC_PASS" \
           "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1000" \
           -o response.txt
@@ -113,7 +113,7 @@ jobs:
           STATUS=$(tail -n1 response.txt | cut -d':' -f2)
 
           if [ "$STATUS" != "200" ]; then
-            echo "❌ Failed to fetch integrations"
+            echo "❌ Failed to fetch integrations (Status: $STATUS)"
             exit 1
           fi
 
@@ -128,8 +128,8 @@ jobs:
             exit 1
           fi
 
-      # ✅ Step 6: Process One Integration (for debug)
-      - name: Test First Integration Only
+      # ✅ Test First Integration (Debug Mode)
+      - name: Test First Integration
         run: |
           set -e
 
@@ -146,7 +146,7 @@ jobs:
           # EXPORT
           echo "Exporting..."
 
-          curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$SRC_USER:$SRC_PASS" \
           "$SRC_OIC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
           -o export.txt
@@ -156,18 +156,17 @@ jobs:
           STATUS=$(tail -n1 export.txt | cut -d':' -f2)
 
           if [ "$STATUS" != "200" ]; then
-            echo "❌ Export failed"
+            echo "❌ Export failed (Status: $STATUS)"
             exit 1
           fi
 
           head -n -1 export.txt > $FILE
-
           file $FILE
 
           # IMPORT
           echo "Importing..."
 
-          curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$TGT_USER:$TGT_PASS" \
           -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/archive" \
           -F "file=@$FILE" \
@@ -178,14 +177,14 @@ jobs:
           STATUS=$(tail -n1 import.txt | cut -d':' -f2)
 
           if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-            echo "❌ Import failed"
+            echo "❌ Import failed (Status: $STATUS)"
             exit 1
           fi
 
           # ACTIVATE
           echo "Activating..."
 
-          curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          curl -s -L -w "\nHTTP_STATUS:%{http_code}\n" \
           -u "$TGT_USER:$TGT_PASS" \
           -X POST "$TGT_OIC_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate" \
           -o activate.txt
@@ -195,7 +194,7 @@ jobs:
           STATUS=$(tail -n1 activate.txt | cut -d':' -f2)
 
           if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-            echo "❌ Activation failed"
+            echo "❌ Activation failed (Status: $STATUS)"
             exit 1
           fi
 
