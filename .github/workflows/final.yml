@@ -14,8 +14,8 @@ jobs:
       - name: Set Variables
         run: |
           {
-            echo "SRC_URL=${{ secrets.UAT_INT_URL }}"
-            echo "TGT_URL=${{ secrets.SIT_INT_URL }}"
+            echo "SRC_URL=${{ secrets.UAT_RUN_URL }}"
+            echo "TGT_URL=${{ secrets.SIT_RUN_URL }}"
  
             echo "SRC_DOMAIN=${{ secrets.UAT_OCI_DOMAIN_URL }}"
             echo "SRC_CLIENT_ID=${{ secrets.UAT_CLIENT_ID }}"
