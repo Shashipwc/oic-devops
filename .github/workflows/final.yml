@@ -1,236 +1,389 @@
 name: OIC Migration UAT -> SIT
  
 on:
+
   workflow_dispatch:
  
 jobs:
+
   migrate:
+
     runs-on: ubuntu-latest
  
     steps:
+
       - name: Install jq
+
         run: sudo apt-get update && sudo apt-get install -y jq
  
       - name: Set Variables
+
         run: |
+
           {
+
             echo "SRC_URL=${{ secrets.UAT_OIC_URL }}"
+
             echo "TGT_URL=${{ secrets.SIT_OIC_URL }}"
  
             echo "SRC_DOMAIN=${{ secrets.UAT_OCI_DOMAIN_URL }}"
+
             echo "SRC_CLIENT_ID=${{ secrets.UAT_CLIENT_ID }}"
+
             echo "SRC_CLIENT_SECRET=${{ secrets.UAT_CLIENT_SECRET }}"
+
             echo "SRC_SCOPE=$(echo '${{ secrets.UAT_OIC_SCOPE }}' | tr -d '\n\r')"
  
             echo "TGT_DOMAIN=${{ secrets.SIT_OCI_DOMAIN_URL }}"
+
             echo "TGT_CLIENT_ID=${{ secrets.SIT_CLIENT_ID }}"
+
             echo "TGT_CLIENT_SECRET=${{ secrets.SIT_CLIENT_SECRET }}"
+
             echo "TGT_SCOPE=$(echo '${{ secrets.SIT_OIC_SCOPE }}' | tr -d '\n\r')"
-          } >> $GITHUB_ENV
+
+          } >> "$GITHUB_ENV"
  
       - name: Get Source Token
+
         run: |
+
           echo "Getting source token..."
  
           RESPONSE=$(curl -s -L -X POST "$SRC_DOMAIN/oauth2/v1/token" \
+
             -u "$SRC_CLIENT_ID:$SRC_CLIENT_SECRET" \
+
             -H "Content-Type: application/x-www-form-urlencoded" \
+
             -d "grant_type=client_credentials&scope=$SRC_SCOPE")
  
           echo "==== SOURCE TOKEN RESPONSE ===="
+
           echo "$RESPONSE"
+
           echo "==============================="
  
           SRC_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
  
           if [ "$SRC_TOKEN" = "null" ] || [ -z "$SRC_TOKEN" ]; then
-            echo "Source token failed"
+
+            echo "❌ Source token failed"
+
             exit 1
+
           fi
  
-          echo "SRC_TOKEN=$SRC_TOKEN" >> $GITHUB_ENV
+          echo "SRC_TOKEN=$SRC_TOKEN" >> "$GITHUB_ENV"
  
       - name: Get Target Token
+
         run: |
+
           echo "Getting target token..."
  
           RESPONSE=$(curl -s -L -X POST "$TGT_DOMAIN/oauth2/v1/token" \
+
             -u "$TGT_CLIENT_ID:$TGT_CLIENT_SECRET" \
+
             -H "Content-Type: application/x-www-form-urlencoded" \
+
             -d "grant_type=client_credentials&scope=$TGT_SCOPE")
  
           echo "==== TARGET TOKEN RESPONSE ===="
+
           echo "$RESPONSE"
+
           echo "==============================="
  
           TGT_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
  
           if [ "$TGT_TOKEN" = "null" ] || [ -z "$TGT_TOKEN" ]; then
-            echo "Target token failed"
+
+            echo "❌ Target token failed"
+
             exit 1
+
           fi
  
-          echo "TGT_TOKEN=$TGT_TOKEN" >> $GITHUB_ENV
+          echo "TGT_TOKEN=$TGT_TOKEN" >> "$GITHUB_ENV"
  
       - name: Validate Source & Target
+
         run: |
+
           SRC_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+
             -H "Authorization: Bearer $SRC_TOKEN" \
+
             "$SRC_URL/ic/api/integration/v1/integrations?limit=1")
  
           TGT_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+
             -H "Authorization: Bearer $TGT_TOKEN" \
+
             "$TGT_URL/ic/api/integration/v1/integrations?limit=1")
  
           echo "SOURCE -> $SRC_STATUS"
+
           echo "TARGET -> $TGT_STATUS"
  
-          [ "$SRC_STATUS" = "200" ] || exit 1
-          [ "$TGT_STATUS" = "200" ] || exit 1
+          if [ "$SRC_STATUS" != "200" ]; then
+
+            echo "❌ Source validation failed"
+
+            exit 1
+
+          fi
+ 
+          if [ "$TGT_STATUS" != "200" ]; then
+
+            echo "❌ Target validation failed"
+
+            exit 1
+
+          fi
  
       - name: Fetch Integrations
+
         run: |
+
           curl -s -L \
+
             -H "Authorization: Bearer $SRC_TOKEN" \
+
             "$SRC_URL/ic/api/integration/v1/integrations?limit=1000" \
+
             -o integrations.json
  
           COUNT=$(jq '.items | length // 0' integrations.json)
+
           echo "Total integrations: $COUNT"
  
+          if [ "$COUNT" -eq 0 ]; then
+
+            echo "⚠️ No integrations found in source"
+
+          fi
+ 
       - name: Export Integrations
+
         run: |
+
           mkdir -p exports
+
           : > export_map.txt
+
+          : > failed_exports.txt
  
           COUNT=$(jq '.items | length // 0' integrations.json)
  
           if [ "$COUNT" -eq 0 ]; then
+
             echo "No integrations found"
+
             exit 0
+
           fi
  
           for i in $(seq 0 $((COUNT - 1))); do
+
             NAME=$(jq -r ".items[$i].code" integrations.json)
+
             VERSION=$(jq -r ".items[$i].version" integrations.json)
  
             FILE="exports/${i}.iar"
-            ENCODED_ID=$(python3 - <<'PY'
-import os, urllib.parse
-name = os.environ["NAME"]
-version = os.environ["VERSION"]
-print(urllib.parse.quote(f"{name}|{version}", safe=""))
-PY
-)
+
+            ENCODED_ID=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(f"{sys.argv[1]}|{sys.argv[2]}", safe=""))' "$NAME" "$VERSION")
  
-            echo "Exporting $NAME|$VERSION"
+            echo "📦 Exporting $NAME|$VERSION"
  
             STATUS=$(curl -s -L -w "%{http_code}" \
+
               -H "Authorization: Bearer $SRC_TOKEN" \
+
               "$SRC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
+
               -o "$FILE")
  
             echo "Status: $STATUS"
  
             if [ "$STATUS" != "200" ]; then
+
+              echo "❌ Export failed: $NAME|$VERSION"
+
               echo "$NAME|$VERSION" >> failed_exports.txt
+
               rm -f "$FILE"
+
               continue
+
             fi
  
             if [ ! -s "$FILE" ]; then
+
+              echo "❌ Empty export file: $NAME|$VERSION"
+
               echo "$NAME|$VERSION" >> failed_exports.txt
+
               rm -f "$FILE"
+
               continue
+
             fi
  
             echo "${i}|${NAME}|${VERSION}" >> export_map.txt
-            echo "Exported $NAME|$VERSION"
+
+            echo "✅ Exported: $NAME|$VERSION"
+
           done
-        env:
-          NAME: ${{ env.NAME }}
-          VERSION: ${{ env.VERSION }}
+ 
+          echo "📂 Exported files:"
+
+          ls -lh exports || echo "No files"
  
       - name: Upload Artifacts
+
         uses: actions/upload-artifact@v4
+
         with:
+
           name: oic-exports
+
           path: exports/
  
       - name: Import Integrations
+
         run: |
-          if [ ! -f export_map.txt ]; then
-            echo "No exports to import"
+
+          : > failed_imports.txt
+ 
+          if [ ! -f export_map.txt ] || [ ! -s export_map.txt ]; then
+
+            echo "⚠️ No exported integrations available to import"
+
             exit 0
+
           fi
  
           while IFS='|' read -r IDX NAME VERSION; do
+
             FILE="exports/${IDX}.iar"
  
             if [ ! -f "$FILE" ]; then
+
+              echo "❌ Missing file for import: $NAME|$VERSION"
+
               echo "$NAME|$VERSION" >> failed_imports.txt
+
               continue
+
             fi
  
-            echo "Importing $NAME|$VERSION"
+            echo "📤 Importing: $NAME|$VERSION"
  
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+
               -H "Authorization: Bearer $TGT_TOKEN" \
+
               -X POST "$TGT_URL/ic/api/integration/v1/integrations/archive" \
+
               -F "file=@$FILE")
  
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+
+              echo "❌ Import failed: $NAME|$VERSION"
+
               echo "$NAME|$VERSION" >> failed_imports.txt
+
               continue
+
             fi
  
-            echo "Imported $NAME|$VERSION"
+            echo "✅ Imported: $NAME|$VERSION"
+
           done < export_map.txt
  
       - name: Activate Integrations
+
         run: |
-          if [ ! -f export_map.txt ]; then
-            echo "No exports to activate"
+
+          : > failed_activation.txt
+ 
+          if [ ! -f export_map.txt ] || [ ! -s export_map.txt ]; then
+
+            echo "⚠️ No exported integrations available to activate"
+
             exit 0
+
           fi
  
           while IFS='|' read -r IDX NAME VERSION; do
-            ENCODED_ID=$(python3 - <<'PY'
-import os, urllib.parse
-name = os.environ["NAME"]
-version = os.environ["VERSION"]
-print(urllib.parse.quote(f"{name}|{version}", safe=""))
-PY
-)
+
+            ENCODED_ID=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(f"{sys.argv[1]}|{sys.argv[2]}", safe=""))' "$NAME" "$VERSION")
  
-            echo "Activating $NAME|$VERSION"
+            echo "⚡ Activating: $NAME|$VERSION"
  
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+
               -H "Authorization: Bearer $TGT_TOKEN" \
+
               -X POST "$TGT_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate")
  
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+
+              echo "❌ Activation failed: $NAME|$VERSION"
+
               echo "$NAME|$VERSION" >> failed_activation.txt
+
               continue
+
             fi
  
-            echo "Activated $NAME|$VERSION"
+            echo "✅ Activated: $NAME|$VERSION"
+
           done < export_map.txt
-        env:
-          NAME: ${{ env.NAME }}
-          VERSION: ${{ env.VERSION }}
  
       - name: Summary
+
         run: |
+
           echo "========== SUMMARY =========="
  
           echo "Failed Exports:"
-          cat failed_exports.txt 2>/dev/null || echo "None"
+
+          if [ -s failed_exports.txt ]; then
+
+            cat failed_exports.txt
+
+          else
+
+            echo "None"
+
+          fi
  
           echo "Failed Imports:"
-          cat failed_imports.txt 2>/dev/null || echo "None"
+
+          if [ -s failed_imports.txt ]; then
+
+            cat failed_imports.txt
+
+          else
+
+            echo "None"
+
+          fi
  
           echo "Failed Activations:"
-          cat failed_activation.txt 2>/dev/null || echo "None"
+
+          if [ -s failed_activation.txt ]; then
+
+            cat failed_activation.txt
+
+          else
+
+            echo "None"
+
+          fi
  
           echo "============================="
