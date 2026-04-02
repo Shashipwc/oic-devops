@@ -47,14 +47,16 @@ jobs:
           -d "grant_type=client_credentials" \
           -u "${CLIENT_ID}:${CLIENT_SECRET}" \
           "${TOKEN_URL}")
-        
+        # 👉 ADD DEBUG HERE
+          echo "===== TOKEN RESPONSE ====="
+          echo "$TOKEN_RESPONSE"
+          echo "=========================="
         ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
         if [ -z "$ACCESS_TOKEN" ]; then
           echo "Error: Failed to get access token"
           echo "$TOKEN_RESPONSE"
           exit 1
-        fi
-        
+        fi       
         echo "token=${ACCESS_TOKEN}" >> $GITHUB_OUTPUT
         echo "oic_url=${OIC_URL}" >> $GITHUB_OUTPUT
         echo "OIC_URL=${OIC_URL}" >> $GITHUB_ENV
