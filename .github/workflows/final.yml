@@ -1,193 +1,236 @@
-name: OIC Migration UAT → SIT (Final Working)
-
+name: OIC Migration UAT -> SIT
+ 
 on:
   workflow_dispatch:
-
+ 
 jobs:
   migrate:
     runs-on: ubuntu-latest
-
+ 
     steps:
-      # ✅ Install jq
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-
-      # ✅ Set variables safely
+ 
       - name: Set Variables
         run: |
           {
             echo "SRC_URL=${{ secrets.UAT_OIC_URL }}"
             echo "TGT_URL=${{ secrets.SIT_OIC_URL }}"
-            echo "DOMAIN=${{ secrets.OCI_DOMAIN_URL }}"
-            echo "CLIENT_ID=${{ secrets.CLIENT_ID }}"
-            echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}"
-            echo "SCOPE=$(echo '${{ secrets.OIC_SCOPE }}' | tr -d '\n\r')"
+ 
+            echo "SRC_DOMAIN=${{ secrets.UAT_OCI_DOMAIN_URL }}"
+            echo "SRC_CLIENT_ID=${{ secrets.UAT_CLIENT_ID }}"
+            echo "SRC_CLIENT_SECRET=${{ secrets.UAT_CLIENT_SECRET }}"
+            echo "SRC_SCOPE=$(echo '${{ secrets.UAT_OIC_SCOPE }}' | tr -d '\n\r')"
+ 
+            echo "TGT_DOMAIN=${{ secrets.SIT_OCI_DOMAIN_URL }}"
+            echo "TGT_CLIENT_ID=${{ secrets.SIT_CLIENT_ID }}"
+            echo "TGT_CLIENT_SECRET=${{ secrets.SIT_CLIENT_SECRET }}"
+            echo "TGT_SCOPE=$(echo '${{ secrets.SIT_OIC_SCOPE }}' | tr -d '\n\r')"
           } >> $GITHUB_ENV
-
-      # 🔐 STEP 1: Get OAuth Token
-      - name: Get Token
+ 
+      - name: Get Source Token
         run: |
-          echo "🔐 Generating token..."
-
-          RESPONSE=$(curl -s -L -X POST "$DOMAIN/oauth2/v1/token" \
-            -u "$CLIENT_ID:$CLIENT_SECRET" \
+          echo "Getting source token..."
+ 
+          RESPONSE=$(curl -s -L -X POST "$SRC_DOMAIN/oauth2/v1/token" \
+            -u "$SRC_CLIENT_ID:$SRC_CLIENT_SECRET" \
             -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "grant_type=client_credentials&scope=$SCOPE")
-
-          echo "==== TOKEN RESPONSE ===="
+            -d "grant_type=client_credentials&scope=$SRC_SCOPE")
+ 
+          echo "==== SOURCE TOKEN RESPONSE ===="
           echo "$RESPONSE"
-          echo "========================"
-
-          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
-
-          if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
-            echo "❌ Token failed"
+          echo "==============================="
+ 
+          SRC_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+ 
+          if [ "$SRC_TOKEN" = "null" ] || [ -z "$SRC_TOKEN" ]; then
+            echo "Source token failed"
             exit 1
           fi
-
-          echo "TOKEN=$TOKEN" >> $GITHUB_ENV
-
-      # 🔍 STEP 2: Validate connections
+ 
+          echo "SRC_TOKEN=$SRC_TOKEN" >> $GITHUB_ENV
+ 
+      - name: Get Target Token
+        run: |
+          echo "Getting target token..."
+ 
+          RESPONSE=$(curl -s -L -X POST "$TGT_DOMAIN/oauth2/v1/token" \
+            -u "$TGT_CLIENT_ID:$TGT_CLIENT_SECRET" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials&scope=$TGT_SCOPE")
+ 
+          echo "==== TARGET TOKEN RESPONSE ===="
+          echo "$RESPONSE"
+          echo "==============================="
+ 
+          TGT_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+ 
+          if [ "$TGT_TOKEN" = "null" ] || [ -z "$TGT_TOKEN" ]; then
+            echo "Target token failed"
+            exit 1
+          fi
+ 
+          echo "TGT_TOKEN=$TGT_TOKEN" >> $GITHUB_ENV
+ 
       - name: Validate Source & Target
         run: |
-          for ENV in SRC TGT; do
-            URL_VAR="${ENV}_URL"
-            URL=${!URL_VAR}
-
-            STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" \
-              "$URL/ic/api/integration/v1/integrations?limit=1")
-
-            echo "$ENV → $STATUS"
-          done
-
-      # 📥 STEP 3: Fetch integrations
+          SRC_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $SRC_TOKEN" \
+            "$SRC_URL/ic/api/integration/v1/integrations?limit=1")
+ 
+          TGT_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $TGT_TOKEN" \
+            "$TGT_URL/ic/api/integration/v1/integrations?limit=1")
+ 
+          echo "SOURCE -> $SRC_STATUS"
+          echo "TARGET -> $TGT_STATUS"
+ 
+          [ "$SRC_STATUS" = "200" ] || exit 1
+          [ "$TGT_STATUS" = "200" ] || exit 1
+ 
       - name: Fetch Integrations
         run: |
           curl -s -L \
-          -H "Authorization: Bearer $TOKEN" \
-          "$SRC_URL/ic/api/integration/v1/integrations?limit=1000" \
-          -o integrations.json
-
+            -H "Authorization: Bearer $SRC_TOKEN" \
+            "$SRC_URL/ic/api/integration/v1/integrations?limit=1000" \
+            -o integrations.json
+ 
           COUNT=$(jq '.items | length // 0' integrations.json)
           echo "Total integrations: $COUNT"
-
-      # 📦 STEP 4: Export integrations
+ 
       - name: Export Integrations
         run: |
           mkdir -p exports
-
+          : > export_map.txt
+ 
           COUNT=$(jq '.items | length // 0' integrations.json)
-
-          for i in $(seq 0 $(($COUNT - 1))); do
+ 
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No integrations found"
+            exit 0
+          fi
+ 
+          for i in $(seq 0 $((COUNT - 1))); do
             NAME=$(jq -r ".items[$i].code" integrations.json)
             VERSION=$(jq -r ".items[$i].version" integrations.json)
-
-            ID="$NAME|$VERSION"
-            ENCODED=$(printf "%s%%7C%s" "$NAME" "$VERSION")
-            FILE="exports/$NAME-$VERSION.iar"
-
-            echo "📦 Exporting $ID"
-
+ 
+            FILE="exports/${i}.iar"
+            ENCODED_ID=$(python3 - <<'PY'
+import os, urllib.parse
+name = os.environ["NAME"]
+version = os.environ["VERSION"]
+print(urllib.parse.quote(f"{name}|{version}", safe=""))
+PY
+)
+ 
+            echo "Exporting $NAME|$VERSION"
+ 
             STATUS=$(curl -s -L -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" \
-              "$SRC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED" \
+              -H "Authorization: Bearer $SRC_TOKEN" \
+              "$SRC_URL/ic/api/integration/v1/integrations/archive?integrationId=$ENCODED_ID" \
               -o "$FILE")
-
+ 
             echo "Status: $STATUS"
-
+ 
             if [ "$STATUS" != "200" ]; then
-              echo "❌ Export failed: $ID"
-              echo "$ID" >> failed_exports.txt
+              echo "$NAME|$VERSION" >> failed_exports.txt
+              rm -f "$FILE"
               continue
             fi
-
+ 
             if [ ! -s "$FILE" ]; then
-              echo "❌ Empty export file: $ID"
-              echo "$ID" >> failed_exports.txt
+              echo "$NAME|$VERSION" >> failed_exports.txt
+              rm -f "$FILE"
               continue
             fi
-
-            echo "✅ Exported: $FILE"
+ 
+            echo "${i}|${NAME}|${VERSION}" >> export_map.txt
+            echo "Exported $NAME|$VERSION"
           done
-
-          echo "📂 Exported files:"
-          ls -lh exports || echo "No files"
-
-      # 📤 Upload artifacts
+        env:
+          NAME: ${{ env.NAME }}
+          VERSION: ${{ env.VERSION }}
+ 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: oic-exports
           path: exports/
-
-      # 📥 STEP 5: Import integrations
+ 
       - name: Import Integrations
         run: |
-          FILES=$(ls exports/*.iar 2>/dev/null || true)
-
-          if [ -z "$FILES" ]; then
-            echo "⚠️ No integration files found to import"
+          if [ ! -f export_map.txt ]; then
+            echo "No exports to import"
             exit 0
           fi
-
-          for FILE in $FILES; do
-            echo "📤 Importing: $FILE"
-
-            STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" \
-              -X POST "$TGT_URL/ic/api/integration/v1/integrations/archive" \
-              -F "file=@$FILE")
-
-            if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-              echo "❌ Import failed: $FILE"
-              echo "$FILE" >> failed_imports.txt
+ 
+          while IFS='|' read -r IDX NAME VERSION; do
+            FILE="exports/${IDX}.iar"
+ 
+            if [ ! -f "$FILE" ]; then
+              echo "$NAME|$VERSION" >> failed_imports.txt
               continue
             fi
-
-            echo "✅ Imported: $FILE"
-          done
-
-      # ⚡ STEP 6: Activate integrations
+ 
+            echo "Importing $NAME|$VERSION"
+ 
+            STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $TGT_TOKEN" \
+              -X POST "$TGT_URL/ic/api/integration/v1/integrations/archive" \
+              -F "file=@$FILE")
+ 
+            if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "$NAME|$VERSION" >> failed_imports.txt
+              continue
+            fi
+ 
+            echo "Imported $NAME|$VERSION"
+          done < export_map.txt
+ 
       - name: Activate Integrations
         run: |
-          FILES=$(ls exports/*.iar 2>/dev/null || true)
-
-          for FILE in $FILES; do
-            BASE=$(basename "$FILE" .iar)
-
-            NAME=$(echo "$BASE" | cut -d'-' -f1)
-            VERSION=$(echo "$BASE" | cut -d'-' -f2)
-
-            ENCODED=$(printf "%s%%7C%s" "$NAME" "$VERSION")
-
-            echo "⚡ Activating: $NAME|$VERSION"
-
+          if [ ! -f export_map.txt ]; then
+            echo "No exports to activate"
+            exit 0
+          fi
+ 
+          while IFS='|' read -r IDX NAME VERSION; do
+            ENCODED_ID=$(python3 - <<'PY'
+import os, urllib.parse
+name = os.environ["NAME"]
+version = os.environ["VERSION"]
+print(urllib.parse.quote(f"{name}|{version}", safe=""))
+PY
+)
+ 
+            echo "Activating $NAME|$VERSION"
+ 
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" \
-              -X POST "$TGT_URL/ic/api/integration/v1/integrations/$ENCODED/activate")
-
+              -H "Authorization: Bearer $TGT_TOKEN" \
+              -X POST "$TGT_URL/ic/api/integration/v1/integrations/$ENCODED_ID/activate")
+ 
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
-              echo "❌ Activation failed: $NAME|$VERSION"
               echo "$NAME|$VERSION" >> failed_activation.txt
               continue
             fi
-
-            echo "✅ Activated: $NAME|$VERSION"
-          done
-
-      # 📊 FINAL SUMMARY
+ 
+            echo "Activated $NAME|$VERSION"
+          done < export_map.txt
+        env:
+          NAME: ${{ env.NAME }}
+          VERSION: ${{ env.VERSION }}
+ 
       - name: Summary
         run: |
           echo "========== SUMMARY =========="
-
+ 
           echo "Failed Exports:"
           cat failed_exports.txt 2>/dev/null || echo "None"
-
+ 
           echo "Failed Imports:"
           cat failed_imports.txt 2>/dev/null || echo "None"
-
+ 
           echo "Failed Activations:"
           cat failed_activation.txt 2>/dev/null || echo "None"
-
+ 
           echo "============================="
