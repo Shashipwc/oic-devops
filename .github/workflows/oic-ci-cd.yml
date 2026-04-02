@@ -32,14 +32,14 @@ jobs:
           echo "🔍 Validating SOURCE (UAT)..."
           SRC_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
           -u "$SRC_USER:$SRC_PASS" \
-          "$SRC_OIC_URL/ic/api/integration/v1/integrations?limit=1")
+          "$SRC_OIC_URL/ic/api/integration/v1/integrations)
 
           echo "SOURCE HTTP STATUS: $SRC_STATUS"
 
           echo "🔍 Validating TARGET (SIT)..."
           TGT_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
           -u "$TGT_USER:$TGT_PASS" \
-          "$TGT_OIC_URL/ic/api/integration/v1/integrations?limit=1")
+          "$TGT_OIC_URL/ic/api/integration/v1/integrations)
 
           echo "TARGET HTTP STATUS: $TGT_STATUS"
 
