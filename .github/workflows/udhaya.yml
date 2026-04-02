@@ -29,15 +29,15 @@ jobs:
       id: get_token
       run: |
         if [ "${{ github.event.inputs.action }}" == "export" ]; then
-          TOKEN_URL="${{ secrets.OIC_SOURCE_TOKEN_URL }}"
-          CLIENT_ID="${{ secrets.OIC_SOURCE_CLIENT_ID }}"
-          CLIENT_SECRET="${{ secrets.OIC_SOURCE_CLIENT_SECRET }}"
-          OIC_URL="${{ secrets.OIC_SOURCE_URL }}"
+          TOKEN_URL="${{ secrets.TOKEN_URL }}"
+          CLIENT_ID="${{ secrets.CLIENT_ID }}"
+          CLIENT_SECRET="${{ secrets.CLIENT_SECRET }}"
+          OIC_URL="${{ secrets.UAT_OIC_URL }}"
         else
-          TOKEN_URL="${{ secrets.OIC_TARGET_TOKEN_URL }}"
-          CLIENT_ID="${{ secrets.OIC_TARGET_CLIENT_ID }}"
-          CLIENT_SECRET="${{ secrets.OIC_TARGET_CLIENT_SECRET }}"
-          OIC_URL="${{ secrets.OIC_TARGET_URL }}"
+          TOKEN_URL="${{ secrets.TOKEN_URL }}"
+          CLIENT_ID="${{ secrets.CLIENT_ID }}"
+          CLIENT_SECRET="${{ secrets.LIENT_SECRET }}"
+          OIC_URL="${{ secrets.SIT_OIC_URL }}"
         fi
         
         echo "Fetching OAuth token from ${TOKEN_URL}..."
