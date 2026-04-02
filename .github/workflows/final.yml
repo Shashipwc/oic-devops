@@ -9,23 +9,25 @@ jobs:
  
     steps:
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq python3
  
       - name: Set Variables
         run: |
           {
-            echo "SRC_URL=${{ secrets.UAT_OIC_URL }}"
-            echo "TGT_URL=${{ secrets.SIT_OIC_URL }}"
+            echo "SRC_URL=${{ secrets.UAT_INT_URL }}"
+            echo "TGT_URL=${{ secrets.SIT_INT_URL }}"
  
             echo "SRC_DOMAIN=${{ secrets.UAT_OCI_DOMAIN_URL }}"
             echo "SRC_CLIENT_ID=${{ secrets.UAT_CLIENT_ID }}"
             echo "SRC_CLIENT_SECRET=${{ secrets.UAT_CLIENT_SECRET }}"
             echo "SRC_SCOPE=$(echo '${{ secrets.UAT_OIC_SCOPE }}' | tr -d '\n\r')"
+            echo "SRC_INSTANCE=${{ secrets.UAT_OIC_INSTANCE }}"
  
             echo "TGT_DOMAIN=${{ secrets.SIT_OCI_DOMAIN_URL }}"
             echo "TGT_CLIENT_ID=${{ secrets.SIT_CLIENT_ID }}"
             echo "TGT_CLIENT_SECRET=${{ secrets.SIT_CLIENT_SECRET }}"
             echo "TGT_SCOPE=$(echo '${{ secrets.SIT_OIC_SCOPE }}' | tr -d '\n\r')"
+            echo "TGT_INSTANCE=${{ secrets.SIT_OIC_INSTANCE }}"
           } >> "$GITHUB_ENV"
  
       - name: Get Source Token
@@ -41,7 +43,6 @@ jobs:
           echo "==============================="
  
           SRC_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
- 
           if [ "$SRC_TOKEN" = "null" ] || [ -z "$SRC_TOKEN" ]; then
             echo "❌ Source token failed"
             exit 1
@@ -62,7 +63,6 @@ jobs:
           echo "==============================="
  
           TGT_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
- 
           if [ "$TGT_TOKEN" = "null" ] || [ -z "$TGT_TOKEN" ]; then
             echo "❌ Target token failed"
             exit 1
@@ -74,11 +74,11 @@ jobs:
         run: |
           SRC_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $SRC_TOKEN" \
-            "${SRC_URL}/ic/api/integration/v1/integrations?limit=1")
+            "${SRC_URL}/ic/api/integration/v1/integrations?integrationInstance=${SRC_INSTANCE}&limit=1")
  
           TGT_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $TGT_TOKEN" \
-            "${TGT_URL}/ic/api/integration/v1/integrations?limit=1")
+            "${TGT_URL}/ic/api/integration/v1/integrations?integrationInstance=${TGT_INSTANCE}&limit=1")
  
           echo "SOURCE -> $SRC_STATUS"
           echo "TARGET -> $TGT_STATUS"
@@ -97,14 +97,14 @@ jobs:
         run: |
           curl -s -L \
             -H "Authorization: Bearer $SRC_TOKEN" \
-            "${SRC_URL}/ic/api/integration/v1/integrations?limit=1000" \
+            "${SRC_URL}/ic/api/integration/v1/integrations?integrationInstance=${SRC_INSTANCE}&limit=1000" \
             -o integrations.json
  
           COUNT=$(jq '.items | length // 0' integrations.json)
           echo "Total integrations: $COUNT"
  
           if [ "$COUNT" -eq 0 ]; then
-            echo "⚠️ No integrations found in source"
+            echo "No integrations found in source"
           fi
  
       - name: Export Integrations
@@ -127,11 +127,11 @@ jobs:
             FILE="exports/${i}.iar"
             ENCODED_ID=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(f"{sys.argv[1]}|{sys.argv[2]}", safe=""))' "$NAME" "$VERSION")
  
-            echo "📦 Exporting $NAME|$VERSION"
+            echo "Exporting $NAME|$VERSION"
  
             STATUS=$(curl -s -L -w "%{http_code}" \
               -H "Authorization: Bearer $SRC_TOKEN" \
-              "${SRC_URL}/ic/api/integration/v1/integrations/archive?integrationId=${ENCODED_ID}" \
+              "${SRC_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}/archive?integrationInstance=${SRC_INSTANCE}" \
               -o "$FILE")
  
             echo "Status: $STATUS"
@@ -154,9 +154,6 @@ jobs:
             echo "✅ Exported: $NAME|$VERSION"
           done
  
-          echo "📂 Exported files:"
-          ls -lh exports || echo "No files"
- 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -167,8 +164,8 @@ jobs:
         run: |
           : > failed_imports.txt
  
-          if [ ! -f export_map.txt ] || [ ! -s export_map.txt ]; then
-            echo "⚠️ No exported integrations available to import"
+          if [ ! -s export_map.txt ]; then
+            echo "No exported integrations available to import"
             exit 0
           fi
  
@@ -181,11 +178,11 @@ jobs:
               continue
             fi
  
-            echo "📤 Importing: $NAME|$VERSION"
+            echo "Importing $NAME|$VERSION"
  
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
               -H "Authorization: Bearer $TGT_TOKEN" \
-              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/archive" \
+              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/archive?integrationInstance=${TGT_INSTANCE}" \
               -F "file=@${FILE}")
  
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
@@ -201,19 +198,21 @@ jobs:
         run: |
           : > failed_activation.txt
  
-          if [ ! -f export_map.txt ] || [ ! -s export_map.txt ]; then
-            echo "⚠️ No exported integrations available to activate"
+          if [ ! -s export_map.txt ]; then
+            echo "No exported integrations available to activate"
             exit 0
           fi
  
           while IFS='|' read -r IDX NAME VERSION; do
             ENCODED_ID=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(f"{sys.argv[1]}|{sys.argv[2]}", safe=""))' "$NAME" "$VERSION")
  
-            echo "⚡ Activating: $NAME|$VERSION"
+            echo "Activating $NAME|$VERSION"
  
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
               -H "Authorization: Bearer $TGT_TOKEN" \
-              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}/activate")
+              -H "Content-Type: application/json" \
+              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}?integrationInstance=${TGT_INSTANCE}" \
+              -d '{"status":"CONFIGURED","enabled":true}')
  
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
               echo "❌ Activation failed: $NAME|$VERSION"
@@ -227,26 +226,10 @@ jobs:
       - name: Summary
         run: |
           echo "========== SUMMARY =========="
- 
           echo "Failed Exports:"
-          if [ -s failed_exports.txt ]; then
-            cat failed_exports.txt
-          else
-            echo "None"
-          fi
- 
+          if [ -s failed_exports.txt ]; then cat failed_exports.txt; else echo "None"; fi
           echo "Failed Imports:"
-          if [ -s failed_imports.txt ]; then
-            cat failed_imports.txt
-          else
-            echo "None"
-          fi
- 
+          if [ -s failed_imports.txt ]; then cat failed_imports.txt; else echo "None"; fi
           echo "Failed Activations:"
-          if [ -s failed_activation.txt ]; then
-            cat failed_activation.txt
-          else
-            echo "None"
-          fi
- 
+          if [ -s failed_activation.txt ]; then cat failed_activation.txt; else echo "None"; fi
           echo "============================="
