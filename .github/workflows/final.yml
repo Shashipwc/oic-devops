@@ -13,15 +13,27 @@ jobs:
  
       - name: Set Variables
         run: |
-          {
-            echo "SRC_URL=${{ secrets.UAT_INT_URL }}"
-            echo "TGT_URL=${{ secrets.SIT_INT_URL }}"
+          strip() { printf '%s' "$1" | tr -d '\n\r' | sed 's|[[:space:]]*$||' | sed 's|/*$||'; }
  
+          SRC_URL=$(strip '${{ secrets.UAT_INT_URL }}')
+          TGT_URL=$(strip '${{ secrets.SIT_INT_URL }}')
+          SRC_INSTANCE=$(strip '${{ secrets.UAT_OIC_INSTANCE }}')
+          TGT_INSTANCE=$(strip '${{ secrets.SIT_OIC_INSTANCE }}')
+ 
+          if [ -z "$SRC_INSTANCE" ] || [ -z "$TGT_INSTANCE" ]; then
+            echo "❌ Set UAT_OIC_INSTANCE and SIT_OIC_INSTANCE (service instance name from design URL ?integrationInstance=...)"
+            exit 1
+          fi
+ 
+          {
+            echo "SRC_URL=$SRC_URL"
+            echo "TGT_URL=$TGT_URL"
+            echo "SRC_INSTANCE=$SRC_INSTANCE"
+            echo "TGT_INSTANCE=$TGT_INSTANCE"
             echo "SRC_DOMAIN=${{ secrets.UAT_OCI_DOMAIN_URL }}"
             echo "SRC_CLIENT_ID=${{ secrets.UAT_CLIENT_ID }}"
             echo "SRC_CLIENT_SECRET=${{ secrets.UAT_CLIENT_SECRET }}"
             echo "SRC_SCOPE=$(echo '${{ secrets.UAT_OIC_SCOPE }}' | tr -d '\n\r')"
- 
             echo "TGT_DOMAIN=${{ secrets.SIT_OCI_DOMAIN_URL }}"
             echo "TGT_CLIENT_ID=${{ secrets.SIT_CLIENT_ID }}"
             echo "TGT_CLIENT_SECRET=${{ secrets.SIT_CLIENT_SECRET }}"
@@ -70,11 +82,13 @@ jobs:
         run: |
           SRC_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $SRC_TOKEN" \
-            "${SRC_URL}/ic/api/integration/v1/integrations?limit=1")
+            -H "Accept: application/json" \
+            "${SRC_URL}/ic/api/integration/v1/integrations?integrationInstance=${SRC_INSTANCE}&limit=1")
  
           TGT_STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $TGT_TOKEN" \
-            "${TGT_URL}/ic/api/integration/v1/integrations?limit=1")
+            -H "Accept: application/json" \
+            "${TGT_URL}/ic/api/integration/v1/integrations?integrationInstance=${TGT_INSTANCE}&limit=1")
  
           echo "SOURCE -> $SRC_STATUS"
           echo "TARGET -> $TGT_STATUS"
@@ -93,7 +107,8 @@ jobs:
         run: |
           curl -s -L \
             -H "Authorization: Bearer $SRC_TOKEN" \
-            "${SRC_URL}/ic/api/integration/v1/integrations?limit=1000" \
+            -H "Accept: application/json" \
+            "${SRC_URL}/ic/api/integration/v1/integrations?integrationInstance=${SRC_INSTANCE}&limit=1000" \
             -o integrations.json
  
           COUNT=$(jq '.items | length // 0' integrations.json)
@@ -107,6 +122,11 @@ jobs:
  
           COUNT=$(jq '.items | length // 0' integrations.json)
  
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No integrations to export"
+            exit 0
+          fi
+ 
           for i in $(seq 0 $((COUNT - 1))); do
             NAME=$(jq -r ".items[$i].code" integrations.json)
             VERSION=$(jq -r ".items[$i].version" integrations.json)
@@ -118,10 +138,19 @@ jobs:
  
             STATUS=$(curl -s -L -w "%{http_code}" \
               -H "Authorization: Bearer $SRC_TOKEN" \
-              "${SRC_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}/archive" \
+              -H "Accept: application/json" \
+              "${SRC_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}/archive?integrationInstance=${SRC_INSTANCE}" \
               -o "$FILE")
  
             if [ "$STATUS" != "200" ]; then
+              echo "❌ Export failed: $NAME|$VERSION (HTTP $STATUS)"
+              echo "$NAME|$VERSION" >> failed_exports.txt
+              rm -f "$FILE"
+              continue
+            fi
+ 
+            if [ ! -s "$FILE" ]; then
+              echo "❌ Empty export file: $NAME|$VERSION"
               echo "$NAME|$VERSION" >> failed_exports.txt
               rm -f "$FILE"
               continue
@@ -141,17 +170,30 @@ jobs:
         run: |
           : > failed_imports.txt
  
+          if [ ! -s export_map.txt ]; then
+            echo "No exported integrations to import"
+            exit 0
+          fi
+ 
           while IFS='|' read -r IDX NAME VERSION; do
             FILE="exports/${IDX}.iar"
+ 
+            if [ ! -f "$FILE" ]; then
+              echo "❌ Missing file: $FILE"
+              echo "$NAME|$VERSION" >> failed_imports.txt
+              continue
+            fi
  
             echo "Importing $NAME|$VERSION"
  
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
               -H "Authorization: Bearer $TGT_TOKEN" \
-              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/archive" \
+              -H "Accept: application/json" \
+              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/archive?integrationInstance=${TGT_INSTANCE}" \
               -F "file=@${FILE}")
  
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "❌ Import failed: $NAME|$VERSION (HTTP $STATUS)"
               echo "$NAME|$VERSION" >> failed_imports.txt
               continue
             fi
@@ -163,6 +205,11 @@ jobs:
         run: |
           : > failed_activation.txt
  
+          if [ ! -s export_map.txt ]; then
+            echo "Nothing to activate"
+            exit 0
+          fi
+ 
           while IFS='|' read -r IDX NAME VERSION; do
             ENCODED_ID=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(f"{sys.argv[1]}|{sys.argv[2]}", safe=""))' "$NAME" "$VERSION")
  
@@ -170,11 +217,13 @@ jobs:
  
             STATUS=$(curl -s -L -o /dev/null -w "%{http_code}" \
               -H "Authorization: Bearer $TGT_TOKEN" \
+              -H "Accept: application/json" \
               -H "Content-Type: application/json" \
-              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}" \
+              -X POST "${TGT_URL}/ic/api/integration/v1/integrations/${ENCODED_ID}?integrationInstance=${TGT_INSTANCE}" \
               -d '{"status":"CONFIGURED","enabled":true}')
  
             if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+              echo "❌ Activation failed: $NAME|$VERSION (HTTP $STATUS)"
               echo "$NAME|$VERSION" >> failed_activation.txt
               continue
             fi
@@ -186,9 +235,9 @@ jobs:
         run: |
           echo "========== SUMMARY =========="
           echo "Failed Exports:"
-          cat failed_exports.txt 2>/dev/null || echo "None"
+          if [ -s failed_exports.txt ]; then cat failed_exports.txt; else echo "None"; fi
           echo "Failed Imports:"
-          cat failed_imports.txt 2>/dev/null || echo "None"
+          if [ -s failed_imports.txt ]; then cat failed_imports.txt; else echo "None"; fi
           echo "Failed Activations:"
-          cat failed_activation.txt 2>/dev/null || echo "None"
+          if [ -s failed_activation.txt ]; then cat failed_activation.txt; else echo "None"; fi
           echo "============================="
